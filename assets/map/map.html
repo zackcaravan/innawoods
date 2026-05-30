@@ -140,6 +140,62 @@
         window.setTrack = (gj) => { const s = map.getSource('track'); if (s) s.setData(gj); };
         window.setRouteWaypoints = (gj) => { const s = map.getSource('route-waypoints'); if (s) s.setData(gj); };
         window.setMeasure = (gj) => { const s = map.getSource('measure'); if (s) s.setData(gj); };
+
+        // Surface mix — for each of N sample points along the route, look at
+        // the closest currently-loaded `roads` feature and bucket by `kind`.
+        // Returns a JSON {kind: fraction} or {"unknown": 1.0} if no tiles
+        // are loaded. Limited to the visible portion of the route — tiles
+        // outside the viewport haven't been fetched. The Dart side flies the
+        // camera to the route bbox + waits for idle before calling this.
+        window.surfaceMixForLine = (coordsJson) => {
+          let coords;
+          try { coords = JSON.parse(coordsJson); } catch (_) { return '{}'; }
+          if (!coords || coords.length < 2) return '{}';
+          // Cumulative screen-px distances (good enough for sampling).
+          const cum = [0];
+          for (let i = 1; i < coords.length; i++) {
+            const a = map.project(coords[i - 1]);
+            const b = map.project(coords[i]);
+            cum.push(cum[i - 1] + Math.hypot(b.x - a.x, b.y - a.y));
+          }
+          const len = cum[cum.length - 1];
+          if (len === 0) return '{}';
+          const N = 200;
+          const buckets = {};
+          for (let i = 0; i < N; i++) {
+            const t = i / (N - 1);
+            const target = t * len;
+            let seg = 1;
+            while (seg < cum.length && cum[seg] < target) seg++;
+            if (seg >= cum.length) seg = cum.length - 1;
+            const segStart = cum[seg - 1];
+            const segLen = cum[seg] - segStart;
+            const lt = segLen === 0 ? 0 : (target - segStart) / segLen;
+            const lng = coords[seg - 1][0] + (coords[seg][0] - coords[seg - 1][0]) * lt;
+            const lat = coords[seg - 1][1] + (coords[seg][1] - coords[seg - 1][1]) * lt;
+            const p = map.project([lng, lat]);
+            const box = [[p.x - 10, p.y - 10], [p.x + 10, p.y + 10]];
+            let feats = [];
+            try {
+              feats = map.queryRenderedFeatures(box).filter(f =>
+                f.source === 'protomaps' &&
+                f.sourceLayer === 'roads' &&
+                f.properties && f.properties.kind);
+            } catch (_) {}
+            const kind = feats.length ? feats[0].properties.kind : 'unknown';
+            buckets[kind] = (buckets[kind] || 0) + 1;
+          }
+          const out = {};
+          for (const k of Object.keys(buckets)) out[k] = buckets[k] / N;
+          return JSON.stringify(out);
+        };
+
+        // Fly to fit a bounding box (lng/lat extents) — used to load tiles
+        // along a route before sampling surface mix.
+        window.fitBounds = (sw_lng, sw_lat, ne_lng, ne_lat) => {
+          map.fitBounds([[sw_lng, sw_lat], [ne_lng, ne_lat]],
+            { padding: 60, animate: true, duration: 600 });
+        };
         // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.
         let demExag = 1.2;
         let terrainOn = false;

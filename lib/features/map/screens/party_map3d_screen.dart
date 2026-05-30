@@ -569,6 +569,7 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
         // Strip "/map.html" so the DEM sampler can hit `/dem/...` on the
         // same in-app server.
         serverBaseUrl: (_url ?? '').replaceFirst('/map.html', ''),
+        onSurfaceMix: () => _computeSurfaceMix(route),
         onRename: (newName) => ref
             .read(routeServiceProvider)
             .update(partyId: widget.partyId, route: route, name: newName),
@@ -595,6 +596,36 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     if (!mounted) return;
     // Sheet dismissed (drag-down, backdrop tap, back) — clear selection.
     await _eval('setSelectedRoute(null)');
+  }
+
+  /// Tell the map to fit the route's bbox (loads the tiles along it), wait
+  /// for the camera to settle, then run the surface-mix query in JS.
+  Future<Map<String, double>> _computeSurfaceMix(MapRoute route) async {
+    if (route.points.length < 2) return const {};
+    // Bounding box of the route.
+    double minLat = route.points.first.latitude;
+    double maxLat = minLat;
+    double minLng = route.points.first.longitude;
+    double maxLng = minLng;
+    for (final p in route.points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+    await _eval('fitBounds($minLng, $minLat, $maxLng, $maxLat)');
+    // Give the easeTo + tile load a beat to finish.
+    await Future.delayed(const Duration(milliseconds: 900));
+    final coordsJson = jsonEncode(
+        [for (final p in route.points) [p.longitude, p.latitude]]);
+    final raw = await _eval('surfaceMixForLine(${jsonEncode(coordsJson)})');
+    if (raw == null || raw.isEmpty) return const {};
+    try {
+      final parsed = jsonDecode(raw) as Map<String, dynamic>;
+      return parsed.map((k, v) => MapEntry(k, (v as num).toDouble()));
+    } catch (_) {
+      return const {};
+    }
   }
 
   String _shareTextFor(MapRoute r) {
@@ -1848,6 +1879,84 @@ class _ScaleBar extends StatelessWidget {
   }
 }
 
+/// Stacked horizontal bar showing what fraction of a route falls on each
+/// road `kind`. Driven by `surfaceMixForLine` in the map.
+class _SurfaceMixBar extends StatelessWidget {
+  const _SurfaceMixBar({required this.mix});
+  final Map<String, double> mix;
+
+  // Friendly labels + colors per Protomaps `kind`.
+  static const _kindMeta = <String, ({String label, Color color})>{
+    'highway': (label: 'Highway', color: Color(0xFFEF5350)),
+    'major_road': (label: 'Major road', color: Color(0xFFFFA726)),
+    'minor_road': (label: 'Minor road', color: Color(0xFFFFD54F)),
+    'path': (label: 'Path / track', color: Color(0xFF8BC34A)),
+    'other': (label: 'Other road', color: Color(0xFF9CCC65)),
+    'pedestrian': (label: 'Pedestrian', color: Color(0xFF26C6DA)),
+    'rail': (label: 'Rail', color: Color(0xFF7E57C2)),
+    'unknown': (label: 'Unknown', color: Color(0xFF455A64)),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    // Sort by descending share. Anything not in the meta table buckets into
+    // "unknown" so colors stay coherent.
+    final entries = mix.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: SizedBox(
+            height: 14,
+            child: Row(
+              children: [
+                for (final e in entries)
+                  Expanded(
+                    flex: (e.value * 1000).round(),
+                    child: ColoredBox(
+                      color: (_kindMeta[e.key] ?? _kindMeta['unknown']!).color,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 10,
+          runSpacing: 4,
+          children: [
+            for (final e in entries)
+              if (e.value >= 0.02)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: (_kindMeta[e.key] ?? _kindMeta['unknown']!).color,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${(_kindMeta[e.key] ?? _kindMeta['unknown']!).label} '
+                      '${(e.value * 100).toStringAsFixed(0)}%',
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11),
+                    ),
+                  ],
+                ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 /// Sparkline of elevation along the route — area-filled, simple, no labels.
 class _ElevationSparkPainter extends CustomPainter {
   _ElevationSparkPainter({required this.samples, required this.color});
@@ -2110,6 +2219,7 @@ class _RouteSheet extends StatefulWidget {
     required this.onShare,
     required this.onExportGpx,
     required this.onAddWaypoint,
+    required this.onSurfaceMix,
     required this.onDelete,
   });
   final MapRoute route;
@@ -2119,6 +2229,7 @@ class _RouteSheet extends StatefulWidget {
   final VoidCallback onShare;
   final VoidCallback onExportGpx;
   final VoidCallback onAddWaypoint;
+  final Future<Map<String, double>> Function() onSurfaceMix;
   final VoidCallback? onDelete;
 
   @override
@@ -2136,6 +2247,10 @@ class _RouteSheetState extends State<_RouteSheet> {
   ElevationStats? _elevStats;
   bool _elevLoading = true;
   DemSampler? _sampler;
+
+  // Surface mix (% by kind) — depends on which tiles are currently rendered;
+  // an opening-time fitBounds nudges the camera to load most of the route.
+  Map<String, double>? _surfaceMix;
 
   @override
   void initState() {
@@ -2160,6 +2275,11 @@ class _RouteSheetState extends State<_RouteSheet> {
       _elevStats = ElevationStats.from(samples);
       _elevLoading = false;
     });
+    // Fire-and-forget the surface mix query — runs in parallel, updates UI
+    // when done. Caller flies the camera to fit + waits for tiles.
+    final mix = await widget.onSurfaceMix();
+    if (!mounted) return;
+    setState(() => _surfaceMix = mix);
   }
 
   @override
@@ -2330,6 +2450,18 @@ class _RouteSheetState extends State<_RouteSheet> {
                   ]),
                 ],
               ),
+            if (_surfaceMix != null && _surfaceMix!.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              const Text('Surface mix',
+                  style: TextStyle(color: Colors.white70, fontSize: 12)),
+              const SizedBox(height: 6),
+              _SurfaceMixBar(mix: _surfaceMix!),
+              const SizedBox(height: 4),
+              const Text(
+                'Based on the visible portion of the route.',
+                style: TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+            ],
             if (r.mine) ...[
               const SizedBox(height: 18),
               const Text('Color', style: TextStyle(color: Colors.white70)),
