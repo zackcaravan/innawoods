@@ -13,6 +13,7 @@ class MapPin {
     required this.createdAt,
     required this.mine,
     this.note,
+    this.photoId,
   });
 
   final String id;
@@ -23,6 +24,11 @@ class MapPin {
   final String? note;
   final DateTime createdAt;
   final bool mine;
+
+  /// Client-generated id pointing at a JPEG in `PhotoStore` on the device
+  /// that originally took it. Photos are device-private; other crew see the
+  /// pin without a thumbnail.
+  final String? photoId;
 }
 
 /// The fixed pin types (kept in the clear server-side for icon rendering).

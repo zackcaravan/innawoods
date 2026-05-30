@@ -568,6 +568,23 @@ final routingServiceProvider = AutoDisposeProvider<RoutingService>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef RoutingServiceRef = AutoDisposeProviderRef<RoutingService>;
+String _$photoStoreHash() => r'4083719da1fa98dc2d1027f86dbe8c449fa73dd6';
+
+/// See also [photoStore].
+@ProviderFor(photoStore)
+final photoStoreProvider = Provider<PhotoStore>.internal(
+  photoStore,
+  name: r'photoStoreProvider',
+  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
+      ? null
+      : _$photoStoreHash,
+  dependencies: null,
+  allTransitiveDependencies: null,
+);
+
+@Deprecated('Will be removed in 3.0. Use Ref instead')
+// ignore: unused_element
+typedef PhotoStoreRef = ProviderRef<PhotoStore>;
 String _$pinServiceHash() => r'3b3c5ee5abb9b66359ad9b884d594486aa50fdc1';
 
 /// See also [pinService].
@@ -1168,7 +1185,7 @@ class _PartyMessagesProviderElement
   String get partyId => (origin as PartyMessagesProvider).partyId;
 }
 
-String _$locationSharingHash() => r'548d6305eae93337e7388138bd286fa2407b12ad';
+String _$locationSharingHash() => r'bbecdb0e3d17bb1a238aa47cf32e7b281bf3f01f';
 
 /// Controls whether this device is broadcasting its own (encrypted) location to
 /// a party. The map screen turns this on while it's open. Publishes on the

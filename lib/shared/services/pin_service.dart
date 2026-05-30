@@ -25,6 +25,7 @@ class PinService {
     required String name,
     required LatLng location,
     String? note,
+    String? photoId,
   }) async {
     final key = await _session.groupKey(partyId);
     if (key == null) throw StateError('No encryption key for this party');
@@ -33,6 +34,7 @@ class PinService {
       'lat': location.latitude,
       'lng': location.longitude,
       if (note != null && note.isNotEmpty) 'note': note,
+      if (photoId != null) 'photoId': photoId,
     });
     await _client.from('pins').insert({
       'party_id': partyId,
@@ -75,6 +77,7 @@ class PinService {
           location: LatLng((data['lat'] as num).toDouble(),
               (data['lng'] as num).toDouble()),
           note: data['note'] as String?,
+          photoId: data['photoId'] as String?,
           createdAt: DateTime.tryParse(row['created_at'] as String? ?? '')
                   ?.toUtc() ??
               DateTime.now().toUtc(),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -12,6 +13,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:uuid/uuid.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -693,21 +696,30 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       builder: (_) => _NewPinSheet(
-        onSubmit: (type, name, note) async {
+        onSubmit: (type, name, note, photo) async {
+          // Save the photo locally FIRST so it's already on disk by the time
+          // the realtime INSERT round-trips and we look it up by photoId.
+          if (photo != null) {
+            await ref
+                .read(photoStoreProvider)
+                .saveFromPath(photo.id, photo.sourcePath);
+          }
           await ref.read(pinServiceProvider).drop(
-              partyId: widget.partyId,
-              type: type,
-              name: name,
-              location: point,
-              note: note);
+                partyId: widget.partyId,
+                type: type,
+                name: name,
+                location: point,
+                note: note,
+                photoId: photo?.id,
+              );
           // "Meet here" pins auto-broadcast a chat ping so the crew sees the
           // rendezvous without needing to find it on the map.
           if (type == PinType.meet.id) {
             try {
               final fmt = _currentSettings?.coordFormat ??
                   CoordFormat.latLonDecimal;
-              final coords = formatCoord(
-                  point.latitude, point.longitude, fmt);
+              final coords =
+                  formatCoord(point.latitude, point.longitude, fmt);
               await ref.read(chatServiceProvider).send(
                     partyId: widget.partyId,
                     text: '📍 Meet here — $name · $coords',
@@ -734,25 +746,73 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
   }
 
   Future<void> _showPin(MapPin pin) async {
+    String? photoPath;
+    if (pin.photoId != null) {
+      photoPath = await ref.read(photoStoreProvider).pathFor(pin.photoId!);
+      if (!await File(photoPath).exists()) photoPath = null;
+    }
+    if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (dctx) => AlertDialog(
         title: Text(pin.name),
-        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(PinType.fromId(pin.type).label),
-          if (pin.note != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(pin.note!)),
-        ]),
+        content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (photoPath != null) ...[
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(dctx);
+                    showDialog<void>(
+                      context: context,
+                      builder: (_) => Dialog(
+                        backgroundColor: Colors.black,
+                        insetPadding: EdgeInsets.zero,
+                        child: InteractiveViewer(
+                          child: Image.file(File(photoPath!)),
+                        ),
+                      ),
+                    );
+                  },
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.file(File(photoPath),
+                        width: 240, height: 160, fit: BoxFit.cover),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              Text(PinType.fromId(pin.type).label),
+              if (pin.note != null)
+                Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(pin.note!)),
+              if (pin.photoId != null && photoPath == null)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Photo was taken on another device.',
+                    style:
+                        TextStyle(color: Colors.white54, fontStyle: FontStyle.italic),
+                  ),
+                ),
+            ]),
         actions: [
           if (pin.mine)
             TextButton(
               style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
               onPressed: () async {
                 await ref.read(pinServiceProvider).delete(pin.id);
+                if (pin.photoId != null) {
+                  await ref.read(photoStoreProvider).delete(pin.photoId!);
+                }
                 if (dctx.mounted) Navigator.pop(dctx);
               },
               child: const Text('Delete'),
             ),
-          TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Close')),
+          TextButton(
+              onPressed: () => Navigator.pop(dctx), child: const Text('Close')),
         ],
       ),
     );
@@ -2723,7 +2783,8 @@ class _NewWaypointSheetState extends State<_NewWaypointSheet> {
 
 class _NewPinSheet extends StatefulWidget {
   const _NewPinSheet({required this.onSubmit});
-  final Future<void> Function(String type, String name, String? note) onSubmit;
+  final Future<void> Function(
+      String type, String name, String? note, _PendingPhoto? photo) onSubmit;
   @override
   State<_NewPinSheet> createState() => _NewPinSheetState();
 }
@@ -2733,6 +2794,9 @@ class _NewPinSheetState extends State<_NewPinSheet> {
   final _name = TextEditingController();
   final _note = TextEditingController();
   bool _busy = false;
+  _PendingPhoto? _photo;
+  final _picker = ImagePicker();
+
   @override
   void dispose() {
     _name.dispose();
@@ -2740,15 +2804,34 @@ class _NewPinSheetState extends State<_NewPinSheet> {
     super.dispose();
   }
 
+  Future<void> _pickPhoto({required ImageSource src}) async {
+    try {
+      final x = await _picker.pickImage(
+          source: src, maxWidth: 2048, imageQuality: 85);
+      if (x == null || !mounted) return;
+      setState(() => _photo =
+          _PendingPhoto(id: const Uuid().v4(), sourcePath: x.path));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(humanizeError(e))));
+      }
+    }
+  }
+
   Future<void> _submit() async {
     setState(() => _busy = true);
     try {
-      await widget.onSubmit(_type.id, _name.text.trim().isEmpty ? _type.label : _name.text.trim(),
-          _note.text.trim().isEmpty ? null : _note.text.trim());
+      await widget.onSubmit(
+          _type.id,
+          _name.text.trim().isEmpty ? _type.label : _name.text.trim(),
+          _note.text.trim().isEmpty ? null : _note.text.trim(),
+          _photo);
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(humanizeError(e))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(humanizeError(e))));
         setState(() => _busy = false);
       }
     }
@@ -2757,33 +2840,90 @@ class _NewPinSheetState extends State<_NewPinSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(left: 16, right: 16, top: 16, bottom: MediaQuery.of(context).viewInsets.bottom + 16),
-      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Drop a pin', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 12),
-        Wrap(spacing: 8, children: [
-          for (final t in PinType.values)
-            ChoiceChip(
-              avatar: Icon(t.icon, size: 18),
-              label: Text(t.label),
-              selected: _type == t,
-              onSelected: (_) => setState(() => _type = t),
+      padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Drop a pin', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            Wrap(spacing: 8, children: [
+              for (final t in PinType.values)
+                ChoiceChip(
+                  avatar: Icon(t.icon, size: 18),
+                  label: Text(t.label),
+                  selected: _type == t,
+                  onSelected: (_) => setState(() => _type = t),
+                ),
+            ]),
+            const SizedBox(height: 12),
+            TextField(
+                controller: _name,
+                decoration: const InputDecoration(labelText: 'Name (optional)')),
+            const SizedBox(height: 8),
+            TextField(
+                controller: _note,
+                decoration: const InputDecoration(labelText: 'Note (optional)')),
+            const SizedBox(height: 12),
+            // Photo row — thumbnail preview + actions. Photos are private to
+            // the device that took them.
+            Row(children: [
+              if (_photo != null) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.file(File(_photo!.sourcePath),
+                      width: 64, height: 64, fit: BoxFit.cover),
+                ),
+                const SizedBox(width: 12),
+              ],
+              Expanded(
+                child: Wrap(spacing: 8, runSpacing: 6, children: [
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                    label: Text(_photo == null ? 'Photo' : 'Retake'),
+                    onPressed: () => _pickPhoto(src: ImageSource.camera),
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.photo_library_outlined, size: 18),
+                    label: const Text('Gallery'),
+                    onPressed: () => _pickPhoto(src: ImageSource.gallery),
+                  ),
+                  if (_photo != null)
+                    TextButton.icon(
+                      icon: const Icon(Icons.close, size: 16),
+                      label: const Text('Remove'),
+                      onPressed: () => setState(() => _photo = null),
+                    ),
+                ]),
+              ),
+            ]),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _busy ? null : _submit,
+              child: _busy
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Drop pin'),
             ),
-        ]),
-        const SizedBox(height: 12),
-        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Name (optional)')),
-        const SizedBox(height: 8),
-        TextField(controller: _note, decoration: const InputDecoration(labelText: 'Note (optional)')),
-        const SizedBox(height: 16),
-        FilledButton(
-          onPressed: _busy ? null : _submit,
-          child: _busy
-              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Drop pin'),
-        ),
-      ]),
+          ]),
     );
   }
+}
+
+/// Photo selected in the new-pin sheet but not yet committed. Carries the
+/// generated client id (UUID) that goes into the pin's encrypted payload AND
+/// the source path so the caller can copy the file into PhotoStore after the
+/// pin successfully drops.
+class _PendingPhoto {
+  const _PendingPhoto({required this.id, required this.sourcePath});
+  final String id;
+  final String sourcePath;
 }
 
 // ===========================================================================

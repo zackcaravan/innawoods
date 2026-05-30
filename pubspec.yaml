@@ -72,6 +72,7 @@ dependencies:
   connectivity_plus: ^6.0.5   # offline-mode banner
   mgrs_dart: ^2.0.0           # MGRS / UTM coordinate conversion
   image: ^4.3.0               # PNG decode for DEM sampling (terrarium tiles)
+  image_picker: ^1.1.2        # camera + gallery for pin photos
 
   # NOTE: deferred to their build phases to keep the build green —
   #   flutter_map + latlong2 + offline tile caching   (Phase 3)

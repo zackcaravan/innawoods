@@ -7,6 +7,8 @@
     <!-- ACCESS_BACKGROUND_LOCATION added in the background-tracking phase -->
     <!-- Dead-man's-switch / crew alerts -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Camera for pin photos (image_picker) -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="innawoods"
         android:name="${applicationName}"

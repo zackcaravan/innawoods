@@ -56,6 +56,10 @@
 		<string>Innawoods needs background location so your crew can see your position while the screen is off (configurable in Settings).</string>
 		<key>NSBluetoothAlwaysUsageDescription</key>
 		<string>Innawoods uses Bluetooth to connect to Meshtastic radios for off-grid messaging.</string>
+		<key>NSCameraUsageDescription</key>
+		<string>Innawoods uses the camera so you can attach a photo to a pin (kept private to your device).</string>
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>Innawoods can attach a photo from your library to a pin.</string>
 		<!-- Background location for live position sharing. -->
 		<key>UIBackgroundModes</key>
 		<array>

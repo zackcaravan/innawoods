@@ -19,6 +19,7 @@ import '../../../shared/services/party_secret_store.dart';
 import '../../../shared/services/chat_service.dart';
 import '../../../shared/services/party_service.dart';
 import '../../../shared/services/pin_service.dart';
+import '../../../shared/services/photo_store.dart';
 import '../../../shared/services/route_service.dart';
 import '../../../shared/services/route_waypoint_service.dart';
 import '../../../shared/services/routing_service.dart';
@@ -85,6 +86,9 @@ GeocoderService geocoderService(Ref ref) => GeocoderService();
 
 @riverpod
 RoutingService routingService(Ref ref) => RoutingService();
+
+@Riverpod(keepAlive: true)
+PhotoStore photoStore(Ref ref) => PhotoStore();
 
 @riverpod
 PinService pinService(Ref ref) => PinService(
