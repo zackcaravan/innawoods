@@ -1,0 +1,95 @@
+# Codemagic CI/CD config for innawoods.
+#
+# Two workflows: `android` (sideload-ready APK) and `ios` (TestFlight). Both
+# inject SUPABASE_URL + SUPABASE_ANON_KEY at build time via --dart-define, so
+# secrets live in Codemagic env-var groups (NOT in this file).
+#
+# Before first iOS build:
+#   1. Create the App Store Connect app record (Bundle ID: com.innawoods.innawoods).
+#   2. In Codemagic: add an App Store Connect integration (API key) named
+#      `app-store-connect`.
+#   3. Create an env-var group named `supabase-prod` containing:
+#        SUPABASE_URL, SUPABASE_ANON_KEY
+#   4. Connect this repo to Codemagic and trigger a build.
+
+workflows:
+  android:
+    name: Android (debug APK)
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      groups:
+        - supabase-prod
+    triggering:
+      events: [push]
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+    scripts:
+      - name: Get dependencies
+        script: flutter pub get
+      - name: Generate Riverpod providers
+        script: dart run build_runner build --delete-conflicting-outputs
+      - name: Build APK
+        script: |
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
+
+  ios:
+    name: iOS (TestFlight)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    integrations:
+      app_store_connect: app-store-connect
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      groups:
+        - supabase-prod
+      vars:
+        BUNDLE_ID: com.innawoods.innawoods
+        APP_STORE_APPLE_ID: 0000000000   # replace with your numeric app id
+    triggering:
+      events: [push]
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+    scripts:
+      - name: Set up code signing
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE --create
+          keychain initialize
+          keychain add-certificates
+          xcode-project use-profiles
+      - name: Get dependencies
+        script: flutter pub get
+      - name: Pod install
+        script: |
+          cd ios && pod install
+      - name: Generate Riverpod providers
+        script: dart run build_runner build --delete-conflicting-outputs
+      - name: Bump build number
+        script: |
+          cd ios && agvtool new-version -all $(($BUILD_NUMBER + 1))
+      - name: Build .ipa
+        script: |
+          flutter build ipa --release \
+            --dart-define=SUPABASE_URL=$SUPABASE_URL \
+            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        # Optionally also notify external testers automatically:
+        # beta_groups:
+        #   - "Inner crew"

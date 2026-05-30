@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>innawoods map</title>
+  <script src="maplibre-gl.js"></script>
+  <link href="maplibre-gl.css" rel="stylesheet" />
+  <script src="pmtiles.js"></script>
+  <style>
+    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    const log = (m) => console.log('[map] ' + m);
+    (async () => {
+      try {
+        const proto = new pmtiles.Protocol();
+        maplibregl.addProtocol('pmtiles', proto.tile);
+        const layers = await (await fetch('wa_layers.json')).json();
+        // Make land fills semi-transparent so the shaded 3D terrain reads
+        // THROUGH them (otherwise opaque green looks flat/pasted-on over relief).
+        for (const l of layers) {
+          if (l.type === 'fill' &&
+              /(land|wood|forest|park|grass|natural|earth|scrub|glacier|sand)/i.test(l.id)) {
+            l.paint = l.paint || {};
+            l.paint['fill-opacity'] = 0.45;
+          }
+        }
+        // Insert hillshade ABOVE the land fills (so its shading shows) but
+        // BELOW roads/labels (first line/symbol layer).
+        let insertAt = layers.findIndex((l) => l.type === 'line' || l.type === 'symbol');
+        if (insertAt < 0) insertAt = layers.length;
+        layers.splice(insertAt, 0, {
+          id: 'hillshade', type: 'hillshade', source: 'dem',
+          paint: {
+            'hillshade-exaggeration': 1.0,
+            'hillshade-shadow-color': '#2e2618',
+            'hillshade-highlight-color': '#fbf7ec'
+          }
+        });
+        const map = new maplibregl.Map({
+          container: 'map',
+          maxTileCacheSize: 40, // cap tile memory (GL pressure on phones)
+          // Use the device's native pixel ratio for crisp 2D + crisp text.
+          // (Capping this was a red herring during the 3D bughunt — the real
+          // cause was sharing the DEM source w/ hillshade, fixed below.)
+          // Do NOT call setPixelRatio() at runtime — resizing the GL surface
+          // while the map is live silently kills the WebView render loop.
+          pixelRatio: window.devicePixelRatio || 1,
+          style: {
+            version: 8,
+            // Bundled (offline): glyphs and sprite ship in the app and are
+            // served by the in-app tile server. Terrain DEM is still online —
+            // Phase D will swap it for a bundled DEM per downloaded region.
+            glyphs: location.origin + '/glyphs/{fontstack}/{range}.pbf',
+            sprite: location.origin + '/sprite/light',
+            sources: {
+              protomaps: {
+                type: 'vector',
+                url: 'pmtiles://' + location.origin + '/wa.pmtiles',
+                attribution: '© OpenStreetMap, © Protomaps'
+              },
+              dem: {
+                type: 'raster-dem',
+                // Proxied through the in-app server (same-origin, no CORS).
+                tiles: [location.origin + '/dem/{z}/{x}/{y}.png'],
+                encoding: 'terrarium', tileSize: 256, maxzoom: 10
+              },
+              // Terrain gets its OWN DEM source — MapLibre warns (and misbehaves)
+              // if hillshade and 3D terrain share one source.
+              demT: {
+                type: 'raster-dem',
+                tiles: [location.origin + '/dem/{z}/{x}/{y}.png'],
+                encoding: 'terrarium', tileSize: 256, maxzoom: 10
+              },
+              // Online raster overlay sources. Sit dormant (visibility:none)
+              // until the user toggles them on from the layers sheet.
+              'usgs-topo': {
+                type: 'raster',
+                tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'],
+                tileSize: 256, maxzoom: 16,
+                attribution: '© USGS'
+              },
+              // Esri World Imagery — global high-res satellite, free, no key.
+              'sat-esri': {
+                type: 'raster',
+                tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+                tileSize: 256, maxzoom: 19,
+                attribution: '© Esri, Maxar, Earthstar Geographics'
+              },
+              // USGS aerial imagery (NAIP-derived, US only).
+              'sat-usgs': {
+                type: 'raster',
+                tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}'],
+                tileSize: 256, maxzoom: 16,
+                attribution: '© USGS'
+              },
+              // OpenTopoMap — hiker-friendly topo raster from SRTM + OSM.
+              'opentopo': {
+                type: 'raster',
+                tiles: ['https://a.tile.opentopomap.org/{z}/{x}/{y}.png'],
+                tileSize: 256, maxzoom: 17,
+                attribution: '© OpenTopoMap (CC-BY-SA)'
+              },
+              // BLM Surface Management Agency — federal land ownership.
+              'blm-sma': {
+                type: 'raster',
+                tiles: ['https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/tile/{z}/{y}/{x}'],
+                tileSize: 256, maxzoom: 13,
+                attribution: '© BLM'
+              },
+              // NIFC current wildfire perimeters — live GeoJSON, populated by
+              // setWildfires() below.
+              wildfires: {
+                type: 'geojson',
+                data: { type: 'FeatureCollection', features: [] }
+              }
+            },
+            layers: layers
+          },
+          center: [-121.76, 46.79], zoom: 11, pitch: 0, bearing: 0, maxPitch: 85
+        });
+
+        // Scale bar is rendered Flutter-side instead of MapLibre's built-in
+        // control — the built-in one ends up under the bottom drag handle and
+        // can't be reliably repositioned.
+
+        const EMPTY = { type: 'FeatureCollection', features: [] };
+        // ---- Flutter <-> map bridge: party data is pushed in as GeoJSON ----
+        window.setMembers = (gj) => {
+          const s = map.getSource('members');
+          log('setMembers ' + ((gj.features || []).length) + (s ? '' : ' [NO SOURCE]'));
+          if (s) s.setData(gj);
+        };
+        window.setPins = (gj) => { const s = map.getSource('pins'); if (s) s.setData(gj); };
+        window.setRoutes = (gj) => { const s = map.getSource('routes'); if (s) s.setData(gj); };
+        window.setTrack = (gj) => { const s = map.getSource('track'); if (s) s.setData(gj); };
+        window.setRouteWaypoints = (gj) => { const s = map.getSource('route-waypoints'); if (s) s.setData(gj); };
+        window.setMeasure = (gj) => { const s = map.getSource('measure'); if (s) s.setData(gj); };
+        // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.
+        let demExag = 1.2;
+        let terrainOn = false;
+        window.setMode = (is3d) => {
+          terrainOn = is3d;
+          // Terrain first so the DEM source starts loading, then tilt the camera.
+          // Use the dedicated `demT` source — sharing the hillshade `dem` source
+          // deadlocks the WebView render loop on setTerrain.
+          map.setTerrain(is3d ? { source: 'demT', exaggeration: demExag } : null);
+          map.easeTo({ pitch: is3d ? 55 : 0, duration: 600 });
+        };
+        // Toggle a named overlay layer on/off (driven by the layers sheet).
+        window.setOverlay = (id, visible) => {
+          // Wildfires has TWO layers behind the single id 'wildfires'.
+          if (id === 'wildfires') {
+            for (const lid of ['wildfires-fill', 'wildfires-line']) {
+              if (map.getLayer(lid)) {
+                map.setLayoutProperty(lid, 'visibility', visible ? 'visible' : 'none');
+              }
+            }
+            if (visible) window.refreshWildfires();
+            return;
+          }
+          if (map.getLayer(id)) {
+            map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+          }
+        };
+
+        // Imagery basemap selector — one of 'sat-esri' | 'sat-usgs' | 'opentopo'
+        // or null to clear. Mutually exclusive with the others.
+        const _imageryLayers = ['imagery-sat-esri', 'imagery-sat-usgs', 'imagery-opentopo'];
+        window.setImagery = (id) => {
+          for (const lid of _imageryLayers) {
+            if (map.getLayer(lid)) {
+              map.setLayoutProperty(lid, 'visibility', 'none');
+            }
+          }
+          if (!id) return;
+          const target = 'imagery-' + id;
+          if (map.getLayer(target)) {
+            map.setLayoutProperty(target, 'visibility', 'visible');
+          }
+        };
+
+        // Hybrid view — when on, hide every protomaps FILL layer so the
+        // imagery shows through; keep line/symbol layers (roads, labels).
+        window.setHybrid = (on) => {
+          const layers = map.getStyle().layers || [];
+          for (const l of layers) {
+            if (l.type === 'fill' && l.source === 'protomaps') {
+              map.setLayoutProperty(l.id, 'visibility', on ? 'none' : 'visible');
+            }
+          }
+        };
+
+        // Fetch + populate current US wildfire perimeters from NIFC. Refreshed
+        // on demand; cheap because the FeatureService is well-cached.
+        window.refreshWildfires = async () => {
+          try {
+            const url = 'https://services3.arcgis.com/T4QMspbfLg3qTGWY/' +
+              'arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/' +
+              'FeatureServer/0/query?where=1%3D1&outFields=IncidentName,GISAcres&' +
+              'f=geojson';
+            const resp = await fetch(url);
+            if (!resp.ok) { log('wildfires fetch ' + resp.status); return; }
+            const data = await resp.json();
+            const src = map.getSource('wildfires');
+            if (src) src.setData(data);
+            log('wildfires: ' + (data.features || []).length + ' features');
+          } catch (e) {
+            log('wildfires fetch fail: ' + e.message);
+          }
+        };
+        // Live-scale the terrain height (driven by the in-app slider).
+        window.setExaggeration = (e) => {
+          demExag = e;
+          if (terrainOn) map.setTerrain({ source: 'demT', exaggeration: e });
+        };
+        // Snappier camera move — flyTo's default arc takes 2+ s on close moves
+        // (the camera zooms out then back in). easeTo with a fixed short
+        // duration feels instant on a recenter tap.
+        window.flyTo = (lng, lat, zoom) => {
+          const t0 = Date.now();
+          log('flyTo start');
+          map.easeTo({ center: [lng, lat], zoom: zoom || 13, duration: 500 });
+          map.once('moveend', () => log('flyTo settled +' + (Date.now() - t0) + 'ms'));
+          map.once('idle', () => log('flyTo idle +' + (Date.now() - t0) + 'ms'));
+        };
+        window.setDraft = (gj) => { const s = map.getSource('draft'); if (s) s.setData(gj); };
+        window.setSearch = (gj) => { const s = map.getSource('search'); if (s) s.setData(gj); };
+        window.getCenter = () => { const c = map.getCenter(); return JSON.stringify({ lng: c.lng, lat: c.lat }); };
+
+        // Off-grid-useful POI categories. Maps Protomaps `kind` strings to a
+        // grouped human-readable label (and an emoji marker, picked up by the
+        // Flutter side for visual distinction).
+        const POI_GROUPS = {
+          'drinking_water': { group: 'Water', icon: '💧' },
+          'toilets':        { group: 'Toilets', icon: '🚻' },
+          'peak':           { group: 'Peak / viewpoint', icon: '⛰' },
+          'park':           { group: 'Park', icon: '🌳' },
+          'garden':         { group: 'Park', icon: '🌳' },
+          'forest':         { group: 'Forest', icon: '🌲' },
+          'bench':          { group: 'Rest spot', icon: '🪑' },
+          'beach':          { group: 'Beach', icon: '🏖' },
+          'marina':         { group: 'Marina / boat ramp', icon: '⚓' },
+          'aerodrome':      { group: 'Airfield', icon: '🛩' },
+          'ferry_terminal': { group: 'Ferry', icon: '⛴' },
+          'school':         { group: 'School', icon: '🏫' },
+          'library':        { group: 'Library', icon: '📚' },
+          'university':     { group: 'University', icon: '🎓' },
+          'stadium':        { group: 'Stadium', icon: '🏟' },
+          'station':        { group: 'Station', icon: '🚉' },
+          'bus_stop':       { group: 'Bus stop', icon: '🚌' },
+          'zoo':            { group: 'Zoo', icon: '🦓' },
+          'animal':         { group: 'Animal area', icon: '🐾' },
+        };
+
+        // Returns nearby POIs (currently-loaded tiles) as a JSON-serialized
+        // list sorted by distance. The current viewport's source tiles define
+        // the search window — zoom in if the user wants more.
+        window.nearbyPois = () => {
+          const center = map.getCenter();
+          const cp = map.project(center);
+          // Source features from the 'pois' layer in the protomaps vector source.
+          let feats = [];
+          try {
+            feats = map.querySourceFeatures('protomaps', { sourceLayer: 'pois' });
+          } catch (e) { return JSON.stringify([]); }
+          const seen = new Set();
+          const out = [];
+          for (const f of feats) {
+            const kind = f.properties && f.properties.kind;
+            const name = f.properties && f.properties.name;
+            if (!name || !POI_GROUPS[kind]) continue;
+            // Dedup by (name+kind+rounded coord) — vector tiles repeat features.
+            const c = f.geometry && f.geometry.coordinates;
+            if (!c) continue;
+            const key = name + '|' + kind + '|' + c[0].toFixed(4) + '|' + c[1].toFixed(4);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const p = map.project(c);
+            const dx = p.x - cp.x, dy = p.y - cp.y;
+            // Pixel distance is sufficient for sorting; we also surface meters.
+            const meters = map.unproject(p).distanceTo(center);
+            out.push({
+              name: name,
+              kind: kind,
+              group: POI_GROUPS[kind].group,
+              icon: POI_GROUPS[kind].icon,
+              lng: c[0],
+              lat: c[1],
+              meters: meters,
+              px: Math.sqrt(dx*dx + dy*dy),
+            });
+          }
+          out.sort((a, b) => a.meters - b.meters);
+          return JSON.stringify(out.slice(0, 60));
+        };
+
+        // Stream camera changes (bearing + zoom + center) up to Flutter so the
+        // compass FAB + scale bar can update without rebuilding the screen.
+        //
+        // Constraints learned the hard way:
+        // - `rotate` only fires for USER drag-rotate; `easeTo` is silent there.
+        //   `move` fires for both, so use it instead.
+        // - `move` fires ~60×/s during animations. Throttle to ~20 Hz max to
+        //   avoid flooding the JS↔Dart bridge (caused renderer crashes).
+        // - Throttle can drop the final emit — always force-emit on `moveend`
+        //   so the FAB hides correctly when the reset animation finishes.
+        let _lastBearing = 0, _lastZoom = -1, _lastEmitMs = 0;
+        const _emitCamera = (force) => {
+          const now = Date.now();
+          if (!force && now - _lastEmitMs < 50) return;
+          const c = map.getCenter();
+          const b = map.getBearing();
+          const z = map.getZoom();
+          if (!force &&
+              Math.abs(b - _lastBearing) < 0.5 &&
+              Math.abs(z - _lastZoom) < 0.05) return;
+          _lastBearing = b; _lastZoom = z; _lastEmitMs = now;
+          if (window.flutter_inappwebview) {
+            window.flutter_inappwebview.callHandler('cameraChanged',
+              JSON.stringify({ bearing: b, zoom: z, lat: c.lat, lng: c.lng }));
+          }
+        };
+        map.on('move', () => _emitCamera(false));
+        map.on('moveend', () => _emitCamera(true));
+
+        // Programmatically set the map bearing — used by heading-up mode to
+        // keep the user's travel direction "up" as they move.
+        window.setBearing = (deg) => {
+          if (typeof deg !== 'number' || !isFinite(deg)) return;
+          map.easeTo({ bearing: deg, duration: 250 });
+        };
+
+        // Snap the camera back to north (driven by the compass FAB).
+        window.resetBearing = () => {
+          const t0 = Date.now();
+          log('resetBearing start');
+          map.easeTo({ bearing: 0, duration: 400 });
+          map.once('moveend', () => log('resetBearing settled +' + (Date.now() - t0) + 'ms'));
+          map.once('idle', () => log('resetBearing idle +' + (Date.now() - t0) + 'ms'));
+        };
+
+        // When Flutter is in "placement mode" (pin / waypoint placement), the
+        // click handler skips the hit-tests entirely and just reports the
+        // tap coordinate, so the user can drop the new pin/waypoint directly
+        // on top of an existing route or pin without re-opening its drawer.
+        let _placementMode = 'none';
+        window.setPlacementMode = (mode) => { _placementMode = mode || 'none'; };
+
+        // Tap → Flutter. Priority: member dot > pin > route > empty map.
+        // (Skipped entirely when in placement mode.)
+        map.on('click', (e) => {
+          if (!window.flutter_inappwebview) return;
+          if (_placementMode !== 'none') {
+            window.flutter_inappwebview.callHandler('mapTap',
+              JSON.stringify({ lng: e.lngLat.lng, lat: e.lngLat.lat }));
+            return;
+          }
+          // Generous hit pad for the member dot — fingers are imprecise on
+          // a small symbol on a busy map.
+          const memBox = [
+            [e.point.x - 24, e.point.y - 24],
+            [e.point.x + 24, e.point.y + 24],
+          ];
+          // Use the invisible-circle hit target (members-hit) — symbol-layer
+          // hit-tests are tight to the rendered glyph and unreliable.
+          const memHit = map.getLayer('members-hit')
+            ? map.queryRenderedFeatures(memBox, { layers: ['members-hit'] })
+            : [];
+          if (memHit.length) {
+            window.flutter_inappwebview.callHandler('memberTap',
+              String(memHit[0].properties.id || ''));
+            return;
+          }
+          const pinHit = map.queryRenderedFeatures(e.point, { layers: ['pins-dot'] });
+          if (pinHit.length) {
+            window.flutter_inappwebview.callHandler('pinTap',
+              String(pinHit[0].properties.id || ''));
+            return;
+          }
+          // Wider hit area than the visible line — devicePixelRatio is ~3.5 so
+          // 4-px stroke is only ~12 device px to land a finger on. 36 px box
+          // is forgiving without grabbing unrelated routes.
+          const pad = 36;
+          const box = [
+            [e.point.x - pad, e.point.y - pad],
+            [e.point.x + pad, e.point.y + pad],
+          ];
+          const routeHit = map.queryRenderedFeatures(box, { layers: ['routes-line'] });
+          if (routeHit.length) {
+            window.flutter_inappwebview.callHandler('routeTap',
+              String(routeHit[0].properties.id || ''));
+            return;
+          }
+          window.flutter_inappwebview.callHandler('mapTap',
+            JSON.stringify({ lng: e.lngLat.lng, lat: e.lngLat.lat }));
+        });
+
+        // Selected route highlight — driven by `setSelectedRoute(id|null)`.
+        // Selected route: bright yellow, thicker line. Others: each route's
+        // own color (falls back to amber). No blur/glow layer — that allocates
+        // per-route framebuffers and crashed the renderer on this device.
+        let _selectedRouteId = '';
+        window.setSelectedRoute = (id) => {
+          _selectedRouteId = id || '';
+          if (!map.getLayer('routes-line')) return;
+          map.setPaintProperty('routes-line', 'line-color', [
+            'case',
+            ['==', ['get', 'id'], _selectedRouteId],
+            '#ffeb3b',
+            ['coalesce', ['get', 'color'], '#D9A441'],
+          ]);
+          map.setPaintProperty('routes-line', 'line-width', [
+            'case',
+            ['==', ['get', 'id'], _selectedRouteId], 6, 4,
+          ]);
+        };
+
+        map.on('load', () => {
+          // Default 2D (no terrain) for low GL memory + reliable markers.
+          // 3D terrain is enabled on demand via setMode(true).
+
+          // BASEMAP IMAGERY LAYERS — drawn first so they sit BELOW all the
+          // vector basemap layers. Only one shown at a time via setImagery().
+          // When "Hybrid" is on, the basemap's fill layers are hidden so the
+          // imagery shows through, while the line/symbol layers (roads, labels)
+          // still draw on top.
+          map.addLayer({ id: 'imagery-sat-esri', type: 'raster', source: 'sat-esri',
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': 1.0 } });
+          map.addLayer({ id: 'imagery-sat-usgs', type: 'raster', source: 'sat-usgs',
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': 1.0 } });
+          map.addLayer({ id: 'imagery-opentopo', type: 'raster', source: 'opentopo',
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': 1.0 } });
+
+          // OVERLAYS — drawn on TOP of the vector basemap.
+          // `usgs-topo` covers the basemap as a translucent topo overlay;
+          // `overlay-trails` highlights tracks/paths from the same PMTiles
+          // data so it works offline.
+          map.addLayer({ id: 'usgs-topo', type: 'raster', source: 'usgs-topo',
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': 0.85 } });
+          map.addLayer({ id: 'blm-sma', type: 'raster', source: 'blm-sma',
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': 0.55 } });
+          // Wildfires: fill (translucent red) + outline (bold red).
+          map.addLayer({ id: 'wildfires-fill', type: 'fill', source: 'wildfires',
+            layout: { visibility: 'none' },
+            paint: { 'fill-color': '#ff3d00', 'fill-opacity': 0.30 } });
+          map.addLayer({ id: 'wildfires-line', type: 'line', source: 'wildfires',
+            layout: { visibility: 'none', 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': '#ff3d00', 'line-width': 2 } });
+          map.addLayer({ id: 'overlay-trails', type: 'line', source: 'protomaps',
+            'source-layer': 'roads',
+            filter: ['in', ['get', 'kind'], ['literal', ['path', 'other']]],
+            layout: { visibility: 'none', 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': '#ff5722',
+              // Wider lines at higher zoom + a slight glow underneath for
+              // visibility against the tan basemap.
+              'line-width': ['interpolate', ['linear'], ['zoom'],
+                10, 1.2,
+                14, 2.5,
+                17, 4],
+              'line-dasharray': [3, 2],
+              'line-opacity': 0.9,
+            } });
+
+          // Party overlays (drawn above terrain/labels).
+          // Live recording breadcrumb — red dashed line so it reads distinct
+          // from saved shared routes (which use line-color from each feature).
+          map.addSource('track', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'track-line', type: 'line', source: 'track',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': '#ff5252',
+              'line-width': 4,
+              'line-dasharray': [2, 1],
+            } });
+
+          map.addSource('routes', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'routes-line', type: 'line', source: 'routes',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': ['coalesce', ['get', 'color'], '#D9A441'],
+              'line-width': 4,
+            } });
+          // Per-route waypoints (rest stops / water / hazards) drawn ABOVE the
+          // route line. Emoji symbol from the waypoint's `icon` property.
+          map.addSource('route-waypoints', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'route-waypoints-dot', type: 'symbol', source: 'route-waypoints',
+            layout: { 'text-field': ['get', 'icon'], 'text-size': 22,
+              'text-allow-overlap': true, 'text-ignore-placement': true },
+            paint: { 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+          map.addLayer({ id: 'route-waypoints-label', type: 'symbol', source: 'route-waypoints',
+            layout: { 'text-field': ['get', 'name'], 'text-font': ['NotoSansRegular'],
+              'text-size': 11, 'text-offset': [0, 1.2], 'text-anchor': 'top',
+              'text-allow-overlap': true, 'text-ignore-placement': true },
+            paint: { 'text-color': '#fff', 'text-halo-color': '#000', 'text-halo-width': 1.2 } });
+
+          map.addSource('pins', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'pins-dot', type: 'symbol', source: 'pins',
+            layout: { 'text-field': '●', 'text-font': ['NotoSansRegular'], 'text-size': 20,
+              'text-allow-overlap': true, 'text-ignore-placement': true },
+            paint: { 'text-color': '#D9A441', 'text-halo-color': '#1c1e1a', 'text-halo-width': 1.5 } });
+          map.addLayer({ id: 'pins-label', type: 'symbol', source: 'pins',
+            layout: { 'text-field': ['get', 'name'], 'text-font': ['NotoSansRegular'], 'text-size': 11,
+              'text-offset': [0, 0.9], 'text-anchor': 'top',
+              'text-allow-overlap': true, 'text-ignore-placement': true },
+            paint: { 'text-color': '#fff', 'text-halo-color': '#000', 'text-halo-width': 1.2 } });
+          // Measurement tool layers — line + vertex dots, cyan to distinguish
+          // from saved routes.
+          map.addSource('measure', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'measure-line', type: 'line', source: 'measure',
+            filter: ['==', ['get', 'kind'], 'line'],
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': '#26c6da', 'line-width': 3,
+              'line-dasharray': [2, 1] } });
+          map.addLayer({ id: 'measure-vertex', type: 'circle', source: 'measure',
+            filter: ['==', ['get', 'kind'], 'vertex'],
+            paint: { 'circle-radius': 5, 'circle-color': '#26c6da',
+              'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' } });
+
+          map.addSource('draft', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'draft-line', type: 'line', source: 'draft',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': '#4fc3f7', 'line-width': 4, 'line-dasharray': [2, 1] } });
+          map.addSource('search', { type: 'geojson', data: EMPTY });
+          map.addLayer({ id: 'search-dot', type: 'circle', source: 'search',
+            paint: { 'circle-radius': 7, 'circle-color': '#ff5252',
+              'circle-stroke-width': 2, 'circle-stroke-color': '#fff' } });
+          map.addSource('members', { type: 'geojson', data: EMPTY });
+          // Pulsing halo around the SELF member's dot — heartbeat animation
+          // driven by a setInterval below. Drawn first so it sits BELOW the
+          // dot/glyph and reads as a soft glow rather than overlapping text.
+          map.addLayer({ id: 'members-self-pulse', type: 'circle', source: 'members',
+            filter: ['==', ['get', 'self'], true],
+            paint: {
+              'circle-radius': 16,
+              'circle-color': ['coalesce', ['get', 'color'], '#D9A441'],
+              'circle-opacity': 0.4,
+              'circle-blur': 0.4,
+            } });
+          // Directional wedge for the self member — only rendered when GPS
+          // reports a heading. Rotated to match the heading.
+          map.addLayer({ id: 'members-self-arrow', type: 'symbol', source: 'members',
+            filter: ['all',
+              ['==', ['get', 'self'], true],
+              ['==', ['get', 'hasHeading'], true]
+            ],
+            layout: {
+              'text-field': '▲',
+              'text-font': ['NotoSansRegular'],
+              'text-size': 16,
+              'text-rotate': ['get', 'heading'],
+              'text-rotation-alignment': 'map',
+              'text-offset': [0, -1.4],
+              'text-allow-overlap': true,
+              'text-ignore-placement': true,
+            },
+            paint: {
+              'text-color': ['coalesce', ['get', 'color'], '#D9A441'],
+              'text-halo-color': '#ffffff',
+              'text-halo-width': 2,
+            } });
+          // Invisible hit-target circle above each member — bigger than the
+          // glyph, transparent, but caught reliably by queryRenderedFeatures.
+          map.addLayer({ id: 'members-hit', type: 'circle', source: 'members',
+            paint: { 'circle-radius': 22, 'circle-opacity': 0 } });
+          map.addLayer({ id: 'members-dot', type: 'symbol', source: 'members',
+            layout: { 'text-field': '●', 'text-font': ['NotoSansRegular'], 'text-size': 26,
+              'text-allow-overlap': true, 'text-ignore-placement': true },
+            paint: { 'text-color': ['to-color', ['get', 'color']],
+              'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
+          map.addLayer({ id: 'members-label', type: 'symbol', source: 'members',
+            layout: { 'text-field': ['get', 'callsign'], 'text-font': ['NotoSansRegular'], 'text-size': 12,
+              'text-offset': [0, -1.2], 'text-anchor': 'bottom',
+              'text-allow-overlap': true, 'text-ignore-placement': true },
+            paint: { 'text-color': '#fff', 'text-halo-color': '#000', 'text-halo-width': 1.6 } });
+          // Pulse the self-member halo — 1 Hz heartbeat. Cheap: just two
+          // setPaintProperty calls per frame; doesn't touch the source.
+          let _pulsePhase = 0;
+          setInterval(() => {
+            if (!map.getLayer('members-self-pulse')) return;
+            _pulsePhase = (_pulsePhase + 0.08) % (Math.PI * 2);
+            const t = (Math.sin(_pulsePhase) + 1) / 2; // 0..1
+            map.setPaintProperty('members-self-pulse', 'circle-radius', 14 + t * 10);
+            map.setPaintProperty('members-self-pulse', 'circle-opacity', 0.18 + (1 - t) * 0.35);
+          }, 80);
+
+          log('ready');
+          if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('mapReady');
+        });
+        map.on('error', (e) => log('err: ' + ((e && e.error && e.error.message) || (e && e.type))));
+      } catch (e) { log('init fail: ' + e.message); }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,176 @@
+name: innawoods
+description: "Privacy-first real-time group coordination and mapping for off-grid crews."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.5
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Backend: auth + encrypted blob relay + realtime
+  supabase_flutter: ^2.8.0
+
+  # State management (Caravan convention)
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Navigation (Caravan convention)
+  go_router: ^14.6.2
+
+  # E2E crypto — open-source (Apache-2.0). X25519, XChaCha20-Poly1305, HKDF.
+  cryptography: ^2.7.0
+  cryptography_flutter: ^2.3.2
+
+  # Map (MapLibre GL JS in WebView, served by an in-app shelf tile server)
+  # + LatLng + device location.
+  latlong2: ^0.9.1
+  geolocator: ^13.0.2
+  permission_handler: ^11.3.1
+
+  # Local notifications for dead-man's-switch alerts
+  flutter_local_notifications: ^18.0.1
+
+  # Private-key storage in OS keystore/keychain
+  flutter_secure_storage: ^9.2.2
+
+  # Utilities
+  uuid: ^4.5.1
+  intl: ^0.20.2
+  shared_preferences: ^2.3.3
+  share_plus: ^10.1.4        # OS share sheet for invite links
+  http: ^1.2.2               # offline tile downloads
+  path_provider: ^2.1.5      # tile cache + GPX file locations
+  path: ^1.9.0
+  flutter_inappwebview: ^6.1.5
+  shelf: ^1.4.2
+  connectivity_plus: ^6.0.5   # offline-mode banner
+  mgrs_dart: ^2.0.0           # MGRS / UTM coordinate conversion
+  image: ^4.3.0               # PNG decode for DEM sampling (terrarium tiles)
+
+  # NOTE: deferred to their build phases to keep the build green —
+  #   flutter_map + latlong2 + offline tile caching   (Phase 3)
+  #   firebase_core + firebase_messaging + flutter_local_notifications (Phase 10)
+  #   permission_handler                              (Phases 3/9/10)
+  #   Meshtastic BLE                                  (Phase 9)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+  # Riverpod codegen
+  build_runner: ^2.4.13
+  riverpod_generator: ^2.6.3
+  custom_lint: ^0.7.0
+  riverpod_lint: ^2.6.3
+
+  # Generates Android + iOS app icon sets from a single 1024² PNG.
+  flutter_launcher_icons: ^0.14.1
+
+  # Generates native splash screens (Android 12+ and pre-12 + iOS).
+  flutter_native_splash: ^2.4.1
+
+  # Pure-Dart Supabase client, used by tool/verify_e2e.dart (no Flutter binding)
+  supabase: ^2.10.2
+
+# Run: dart run flutter_launcher_icons
+flutter_launcher_icons:
+  image_path: "assets/icons/innawoods.png"
+  android: "ic_launcher"
+  ios: true
+  remove_alpha_ios: true
+  adaptive_icon_background: "#1c1e1a"
+  adaptive_icon_foreground: "assets/icons/innawoods.png"
+  min_sdk_android: 21
+
+# Run: dart run flutter_native_splash:create
+flutter_native_splash:
+  color: "#1c1e1a"
+  image: "assets/icons/innawoods-splash.png"
+  android_12:
+    color: "#1c1e1a"
+    image: "assets/icons/innawoods-splash.png"
+  android: true
+  ios: true
+  fullscreen: false
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in
+  # the material Icons class.
+  uses-material-design: true
+
+  assets:
+    - assets/map/
+    - assets/icons/
+    - assets/map/sprite/
+    - assets/map/glyphs/NotoSansRegular/
+    - assets/map/glyphs/NotoSansItalic/
+    - assets/map/glyphs/NotoSansMedium/
+
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding adding assets from package dependencies, see
+  # https://flutter.dev/to/asset-from-package
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  # fonts:
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
+  #
+  # For details regarding fonts from package dependencies,
+  # see https://flutter.dev/to/font-from-package
