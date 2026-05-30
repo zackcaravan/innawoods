@@ -33,10 +33,8 @@ class MapsScreen extends ConsumerWidget {
             color: Colors.amber.withValues(alpha: 0.12),
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: const Text(
-              'Region URLs are placeholders — host your own .pmtiles (S3, R2, '
-              'GitHub release) and edit lib/shared/services/region_catalog.dart '
-              'to point at them. Your Washington download already on device '
-              'works either way.',
+              'Washington is built — other regions ship as we add them to the '
+              'GitHub releases.',
               style: TextStyle(fontSize: 12, color: Colors.white70),
             ),
           ),
