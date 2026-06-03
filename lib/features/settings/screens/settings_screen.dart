@@ -127,14 +127,15 @@ class _Body extends ConsumerWidget {
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          value: settings.headingUp,
+          value: settings.autoHeadingUp,
           onChanged: (v) =>
-              controller.save(settings.copyWith(headingUp: v)),
-          title: const Text('Heading-up map'),
+              controller.save(settings.copyWith(autoHeadingUp: v)),
+          title: const Text('Auto heading-up over 4 mph'),
           subtitle: const Text(
-              'Rotate the map so your travel direction is always up. '
-              'Compass single-tap still snaps back to north.'),
-          secondary: const Icon(Icons.navigation_outlined),
+              'Map flips to heading-up while you\'re moving briskly, then '
+              'returns to north when you stop. Compass tap also resets to '
+              'north anytime.'),
+          secondary: const Icon(Icons.directions_walk),
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -147,6 +148,9 @@ class _Body extends ConsumerWidget {
               'battery slider. Shows a TRIP badge on the map while on.'),
           secondary: const Icon(Icons.eco_outlined),
         ),
+        // Off-road style lives in the map's Layers drawer instead of here —
+        // it's a "moment's notice" visual toggle and Settings is for things
+        // you set once and forget. See party_map3d_screen `_showLayersSheet`.
         const SizedBox(height: 8),
         Text('3D terrain height: ${_exagLabel(settings.terrainExaggeration)}'),
         Slider(

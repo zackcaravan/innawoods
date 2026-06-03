@@ -16,6 +16,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -184,9 +185,45 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
   final List<LatLng> _draft = [];
   final List<List<LatLng>> _segments = [];
 
+  // Freehand draw — when on, the user finger-drags a path over the map
+  // instead of tapping points. The overlay disambiguates 1- vs 2-finger
+  // touches itself: 1 finger draws, 2 fingers route through to MapLibre as
+  // a pan + pinch-zoom + rotate via the panBy / zoomBy / rotateBy JS
+  // bridges. Once all fingers lift, the next single-finger touch resumes
+  // drawing — you don't have to re-toggle anything.
+  bool _freehand = false;
+  bool _freehandActive = false;
+  final List<Offset> _freehandPts = [];
+
+  /// Live pointer book — local positions keyed by Flutter's pointer id.
+  /// Drives the 1-vs-2-finger decision inside the overlay's Listener.
+  final Map<int, Offset> _activePtrs = {};
+
+  /// True once the current touch sequence escalated to two fingers. Stays
+  /// true until ALL fingers lift, so dropping back to one finger mid-pan
+  /// doesn't accidentally start a new freehand stroke under the user.
+  bool _gestureIsPan = false;
+
+  /// Snapshot of the two-finger geometry at the start of (and updated
+  /// each frame of) a pan/pinch/rotate. We diff against the new geometry
+  /// to derive incremental pan / zoom / rotation deltas to send to JS.
+  Offset? _twoFingerMid;
+  double? _twoFingerDist;
+  double? _twoFingerAngle;
+
   bool _autoCentered = false;
   bool _unread = false;
   int _lastSeenMsgCount = -1;
+
+  /// Follow-mode: when on, every position update slides the camera to the
+  /// user's location at the current zoom. Manual map gestures flip it off;
+  /// the Recenter FAB flips it back on. See `userPan` JS handler.
+  bool _following = true;
+
+  /// Auto-heading-up sticky state — tracks whether the last sustained-speed
+  /// decision asked the map to be in heading-up mode, so we don't write the
+  /// setting on every fix.
+  bool _autoHeadUpActive = false;
 
   @override
   void initState() {
@@ -257,6 +294,9 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       _eval('setImagery(${jsonEncode(_imagery)})');
     }
     if (_hybrid) _eval('setHybrid(true)');
+    if (_currentSettings?.offRoadStyle == true) {
+      _eval('setOffRoadStyle(true)');
+    }
   }
 
   Future<void> _boot() async {
@@ -270,7 +310,15 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     }
     final pmtilesPath = await ref.read(regionStoreProvider).pathFor(activeId);
     if (!mounted) return;
-    final server = MapTileServer(pmtilesPath);
+    // DEM cache lives under the app's private support dir so it survives
+    // re-launches and isn't user-visible. Lets the hillshade keep rendering
+    // offline after the user has panned around with internet at least once,
+    // or after they've explicitly pre-downloaded terrain for the region.
+    final supportDir = await getApplicationSupportDirectory();
+    final demCacheDir = Directory(
+        '${supportDir.path}${Platform.pathSeparator}dem_cache');
+    if (!mounted) return;
+    final server = MapTileServer(pmtilesPath, demCacheDir: demCacheDir);
     final port = await server.start();
     if (!mounted) return;
     setState(() {
@@ -684,6 +732,229 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
   void _clearDraft() {
     _draft.clear();
     _segments.clear();
+    _freehandPts.clear();
+    _push('setDraft', _draftGeo());
+  }
+
+  /// Decimate a screen-space polyline so we don't ship every onPanUpdate
+  /// frame to JS. Drops points whose perpendicular distance from the line
+  /// connecting their neighbours is below [epsilonPx] — Ramer-Douglas-Peucker
+  /// in its iterative one-pass form. Keeps the natural curve of the finger
+  /// drag while cutting most points.
+  List<Offset> _decimate(List<Offset> pts, {double epsilonPx = 3}) {
+    if (pts.length < 3) return List.of(pts);
+    final out = <Offset>[pts.first];
+    for (int i = 1; i < pts.length - 1; i++) {
+      final a = out.last;
+      final b = pts[i];
+      final c = pts[i + 1];
+      // Perpendicular distance from b to line ac.
+      final dx = c.dx - a.dx, dy = c.dy - a.dy;
+      final len = math.sqrt(dx * dx + dy * dy);
+      if (len < 1e-6) continue;
+      final d = ((b.dx - a.dx) * dy - (b.dy - a.dy) * dx).abs() / len;
+      if (d > epsilonPx) out.add(b);
+    }
+    out.add(pts.last);
+    return out;
+  }
+
+  // ---- Freehand multi-touch routing ----------------------------------------
+  //
+  // The overlay's Listener calls these directly. Goal: 1 finger drives a
+  // freehand draw stroke, 2 fingers drive a pan + pinch-zoom + rotate on
+  // the WebView via JS. A touch sequence "becomes" a pan the moment a
+  // second finger lands; from that point on, we don't draw again until
+  // every finger lifts (avoids accidental strokes when you let one finger
+  // go but keep the other on the map).
+
+  void _freehandPointerDown(PointerDownEvent e) {
+    _activePtrs[e.pointer] = e.localPosition;
+    if (_activePtrs.length == 1 && !_gestureIsPan) {
+      setState(() {
+        _freehandActive = true;
+        _freehandPts
+          ..clear()
+          ..add(e.localPosition);
+      });
+    } else if (_activePtrs.length == 2) {
+      // Escalate to two-finger pan/pinch/rotate. Throw away whatever
+      // partial stroke we had — the user is now manipulating the map.
+      _gestureIsPan = true;
+      setState(() {
+        _freehandActive = false;
+        _freehandPts.clear();
+      });
+      _initTwoFinger();
+    }
+    // 3+ fingers — extras are tracked but don't change behaviour.
+  }
+
+  void _freehandPointerMove(PointerMoveEvent e) {
+    if (!_activePtrs.containsKey(e.pointer)) return;
+    _activePtrs[e.pointer] = e.localPosition;
+    if (_activePtrs.length == 1 && _freehandActive && !_gestureIsPan) {
+      setState(() => _freehandPts.add(e.localPosition));
+    } else if (_activePtrs.length >= 2 && _gestureIsPan) {
+      _applyTwoFingerDelta();
+    }
+  }
+
+  Future<void> _freehandPointerUp(PointerUpEvent e) async {
+    if (!_activePtrs.containsKey(e.pointer)) return;
+    _activePtrs.remove(e.pointer);
+    if (_activePtrs.isEmpty) {
+      // All fingers up — terminate the gesture. If we were drawing, commit;
+      // if we were panning, just reset.
+      final wasDrawing = _freehandActive && !_gestureIsPan;
+      final hadStroke = wasDrawing && _freehandPts.length >= 2;
+      setState(() => _freehandActive = false);
+      _gestureIsPan = false;
+      _twoFingerMid = null;
+      _twoFingerDist = null;
+      _twoFingerAngle = null;
+      if (hadStroke) await _commitFreehand();
+    } else if (_gestureIsPan && _activePtrs.length < 2) {
+      // Dropped from 2 fingers to 1 — keep panning mode locked off so
+      // the lingering finger doesn't start a new stroke.
+      _twoFingerMid = null;
+      _twoFingerDist = null;
+      _twoFingerAngle = null;
+    }
+  }
+
+  void _freehandPointerCancel(PointerCancelEvent e) {
+    _activePtrs.remove(e.pointer);
+    if (_activePtrs.isEmpty) {
+      setState(() {
+        _freehandActive = false;
+        _freehandPts.clear();
+      });
+      _gestureIsPan = false;
+      _twoFingerMid = null;
+      _twoFingerDist = null;
+      _twoFingerAngle = null;
+    } else if (_activePtrs.length < 2) {
+      _twoFingerMid = null;
+      _twoFingerDist = null;
+      _twoFingerAngle = null;
+    }
+  }
+
+  /// Snapshot the two-finger geometry — midpoint, finger separation,
+  /// angle between the two fingers in radians.
+  void _initTwoFinger() {
+    if (_activePtrs.length < 2) return;
+    final pts = _activePtrs.values.toList(growable: false);
+    _twoFingerMid = (pts[0] + pts[1]) / 2;
+    _twoFingerDist = (pts[0] - pts[1]).distance;
+    _twoFingerAngle = math.atan2(
+        pts[1].dy - pts[0].dy, pts[1].dx - pts[0].dx);
+  }
+
+  /// Compute the diff vs. the last sampled two-finger geometry and route
+  /// it to the map: midpoint delta → panBy, finger-separation ratio →
+  /// zoomBy, angle delta → rotateBy. Skips degenerate samples to avoid
+  /// NaN-floods when the fingers happen to be co-located mid-frame.
+  void _applyTwoFingerDelta() {
+    if (_activePtrs.length < 2 ||
+        _twoFingerMid == null ||
+        _twoFingerDist == null ||
+        _twoFingerAngle == null) {
+      _initTwoFinger();
+      return;
+    }
+    final pts = _activePtrs.values.toList(growable: false);
+    final newMid = (pts[0] + pts[1]) / 2;
+    final newDist = (pts[0] - pts[1]).distance;
+    final newAngle = math.atan2(
+        pts[1].dy - pts[0].dy, pts[1].dx - pts[0].dx);
+
+    // Pan — map content follows the midpoint, so the camera moves
+    // opposite to the finger delta.
+    final panDelta = newMid - _twoFingerMid!;
+    if (panDelta.distance >= 0.5) {
+      _eval('panBy(${-panDelta.dx},${-panDelta.dy})');
+    }
+    // Zoom — exponent of finger-distance ratio. ≥10% change to avoid
+    // jitter on near-static pinches.
+    if (newDist > 1 && _twoFingerDist! > 1) {
+      final ratio = newDist / _twoFingerDist!;
+      if ((ratio - 1).abs() >= 0.005) {
+        final dz = math.log(ratio) / math.ln2;
+        _eval('zoomBy($dz,${newMid.dx},${newMid.dy})');
+      }
+    }
+    // Rotate — wrap the angle delta into [-π, π] so a sweep across the
+    // ±π boundary doesn't flip the camera 360° in one frame.
+    double dA = newAngle - _twoFingerAngle!;
+    if (dA > math.pi) dA -= 2 * math.pi;
+    if (dA < -math.pi) dA += 2 * math.pi;
+    if (dA.abs() >= 0.005) {
+      final deg = dA * 180 / math.pi;
+      _eval('rotateBy($deg,${newMid.dx},${newMid.dy})');
+    }
+
+    _twoFingerMid = newMid;
+    _twoFingerDist = newDist;
+    _twoFingerAngle = newAngle;
+  }
+
+  /// Finger-lift handler for freehand mode. Batch-converts screen points
+  /// to lat/lng via the JS bridge, optionally snaps the polyline to the
+  /// road network, then APPENDS to whatever the user has already drawn —
+  /// so lifting your finger and starting again continues the same route
+  /// instead of resetting it. (QA: "the route resets if you lift your
+  /// finger and then redraws from where you redraw the route, instead of
+  /// continuing the same route".)
+  Future<void> _commitFreehand() async {
+    if (_freehandPts.length < 2) return;
+    setState(() => _snapping = _snap);
+    final pruned = _decimate(_freehandPts);
+    final xyJson =
+        jsonEncode([for (final p in pruned) [p.dx, p.dy]]);
+    final llRaw = await _eval(
+        'screenPointsToLatLngs(${jsonEncode(xyJson)})');
+    if (!mounted) return;
+    if (llRaw == null) {
+      setState(() {
+        _snapping = false;
+        _freehandPts.clear();
+      });
+      return;
+    }
+    String coordsJson = llRaw;
+    if (_snap) {
+      final snapped =
+          await _eval('snapToRoads(${jsonEncode(coordsJson)})');
+      if (!mounted) return;
+      if (snapped != null) coordsJson = snapped;
+    }
+    List<LatLng> coords;
+    try {
+      coords = (jsonDecode(coordsJson) as List).map((e) {
+        final l = e as List;
+        return LatLng(
+            (l[1] as num).toDouble(), (l[0] as num).toDouble());
+      }).toList();
+    } catch (_) {
+      setState(() {
+        _snapping = false;
+        _freehandPts.clear();
+      });
+      return;
+    }
+    setState(() {
+      // Append this stroke as its own segment so undo can peel them off
+      // one at a time. The full route is the concatenation of segments
+      // (see `_drawnLine`). _draft mirrors that for accurate UI labels.
+      _segments.add(coords);
+      _draft
+        ..clear()
+        ..addAll([for (final seg in _segments) ...seg]);
+      _freehandPts.clear();
+      _snapping = false;
+    });
     _push('setDraft', _draftGeo());
   }
 
@@ -990,6 +1261,23 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                       'Current wildfires',
                       'NIFC perimeters — refreshed when toggled on.'),
                   const Divider(height: 16),
+                  header('Map style'),
+                  SwitchListTile(
+                    value: _currentSettings?.offRoadStyle ?? false,
+                    onChanged: (v) async {
+                      final s = _currentSettings;
+                      if (s == null) return;
+                      await ref
+                          .read(settingsControllerProvider.notifier)
+                          .save(s.copyWith(offRoadStyle: v));
+                      setSheet(() {});
+                    },
+                    secondary: const Icon(Icons.terrain_outlined),
+                    title: const Text('Off-road style'),
+                    subtitle: const Text(
+                        'Mute highways, bolden trails, stronger hillshade.'),
+                  ),
+                  const Divider(height: 16),
                   header('Tools'),
                   ListTile(
                     leading: const Icon(Icons.straighten),
@@ -1026,17 +1314,79 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     await _eval('setMode($on)');
   }
 
+  /// Handle a fresh local GPS fix — runs every time `selfPositionProvider`
+  /// emits (roughly every 5 m of movement). Two responsibilities:
+  ///   • Follow-mode camera: keep the user's dot on screen at the user's
+  ///     current zoom (set by recenter / pinch / never overridden).
+  ///   • Auto heading-up: when sustained speed ≥ 4 mph, flip into heading-up
+  ///     mode and rotate the camera to match the device course. Drops back
+  ///     to north-up when speed falls below 2 mph (hysteresis prevents
+  ///     flapping at the threshold).
+  void _onLocalPosition(Position pos) {
+    if (!_ready) return;
+    // 1. Follow-mode camera.
+    if (_following && !_drawing && !_measuring && !_placingPin &&
+        _placingWaypointForRouteId == null) {
+      final z = _camera.value.zoom;
+      final keepZoom = (z.isFinite && z > 0) ? z : 14.0;
+      _eval('flyToZoom(${pos.longitude},${pos.latitude},$keepZoom)');
+    }
+    // 2. Auto heading-up. 4 mph ≈ 1.788 m/s; drop threshold at 2 mph
+    // ≈ 0.894 m/s to avoid toggling between every footfall.
+    final s = _currentSettings;
+    if (s == null || !s.autoHeadingUp) return;
+    final speed = pos.speed.isFinite ? pos.speed : 0.0;
+    final shouldBe = _autoHeadUpActive
+        ? speed >= 0.894     // hysteresis low — keep heading-up until we're slow
+        : speed >= 1.788;    // hysteresis high — only engage above brisk walk
+    if (shouldBe == _autoHeadUpActive) {
+      // Already in the right mode — still feed the heading so rotation tracks.
+      if (_autoHeadUpActive && pos.heading.isFinite && pos.heading >= 0) {
+        _eval('setBearing(${pos.heading})');
+      }
+      return;
+    }
+    setState(() => _autoHeadUpActive = shouldBe);
+    if (shouldBe && pos.heading.isFinite && pos.heading >= 0) {
+      _eval('setBearing(${pos.heading})');
+    } else if (!shouldBe) {
+      _eval('resetBearing()');
+    }
+  }
+
+  /// Snap the camera back to the user's last known position. Preserves the
+  /// current zoom (per QA: "make recenter stay at the zoom level you were at
+  /// when you pushed the button"), re-enables follow-mode, and triggers a
+  /// repaint so any stale tiles refetch.
   void _recenter() {
     if (!mounted) return;
     final self = _members.where((m) => m.isSelf).firstOrNull ??
         (_members.isNotEmpty ? _members.first : null);
-    if (self != null) {
-      _eval('flyTo(${self.location.longitude},${self.location.latitude},14)');
-    }
+    if (self == null) return;
+    HapticFeedback.selectionClick();
+    final z = _camera.value.zoom;
+    final keepZoom = (z.isFinite && z > 0) ? z : 14.0;
+    _eval(
+        'flyToZoom(${self.location.longitude},${self.location.latitude},$keepZoom)');
+    _eval('refreshMap()');
+    // Re-push our own state too — pins/routes/members — in case the WebView
+    // dropped any while the user was elsewhere.
+    _pushAll();
+    setState(() => _following = true);
   }
 
   @override
   Widget build(BuildContext context) {
+    // Local self-position stream — fires every ~5 m of movement. Drives
+    // (a) follow-mode camera updates, (b) the auto-heading-up logic when
+    // the user's sustained speed is ≥4 mph. Independent from the encrypted
+    // Supabase round-trip so the dot feels instant.
+    ref.listen(selfPositionProvider, (_, next) {
+      if (!mounted) return;
+      final pos = next.valueOrNull;
+      if (pos == null) return;
+      _onLocalPosition(pos);
+    });
     ref.listen(partyLiveProvider(widget.partyId), (_, next) {
       if (!mounted) return;
       final members = next.valueOrNull ?? const <MemberPosition>[];
@@ -1054,20 +1404,26 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
         _deadMan?.evaluate(next.valueOrNull ?? const [],
             enabled: true, thresholdMinutes: s.deadManMinutes);
       }
-      // Heading-up mode: rotate the map so the user's travel direction is up.
-      // Only when the device reports a heading (heading is undefined when
-      // stationary or when no compass data is available).
-      if (s?.headingUp == true) {
-        final self = members.where((m) => m.isSelf).firstOrNull;
-        final h = self?.heading;
-        if (h != null && h.isFinite && h >= 0) {
-          _eval('setBearing($h)');
-        }
-      }
+      // (Heading-up is now driven entirely by `_onLocalPosition` off the
+      // local GPS stream — no need to re-evaluate it from the encrypted
+      // partyLive round-trip too.)
     });
     ref.listen(settingsControllerProvider, (_, next) {
       if (!mounted) return;
+      final before = _currentSettings;
       _currentSettings = next.valueOrNull;
+      // Off-road style is reversible JS — re-apply on every change.
+      if (before?.offRoadStyle != _currentSettings?.offRoadStyle) {
+        _eval('setOffRoadStyle(${_currentSettings?.offRoadStyle == true})');
+      }
+      // If the user just disabled auto-heads-up while we're currently
+      // engaged, snap back to north so the map doesn't stay rotated.
+      if (before?.autoHeadingUp == true &&
+          _currentSettings?.autoHeadingUp == false &&
+          _autoHeadUpActive) {
+        setState(() => _autoHeadUpActive = false);
+        _eval('resetBearing()');
+      }
     });
     ref.listen(partyPinsProvider(widget.partyId), (_, next) {
       if (!mounted) return;
@@ -1206,6 +1562,16 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                     } catch (_) {/* ignore malformed */}
                     return null;
                   });
+              // Drops follow-mode the moment the user manually pans / pinches
+              // / rotates — the JS bridge only fires this for input-driven
+              // camera changes, not for our programmatic flyTo calls.
+              controller.addJavaScriptHandler(
+                  handlerName: 'userPan',
+                  callback: (_) {
+                    if (!mounted) return null;
+                    if (_following) setState(() => _following = false);
+                    return null;
+                  });
             },
             onConsoleMessage: (c, msg) => debugPrint('MAP_CONSOLE: ${msg.message}'),
             onRenderProcessGone: (controller, detail) async {
@@ -1319,46 +1685,31 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
               );
             },
           ),
-          // Compass — bottom-left, ALWAYS visible.
-          //   • Single tap → reset bearing to north
-          //   • Double tap → toggle heading-up mode (map follows your direction)
-          // Persistent so double-tap is always accessible (it can't disappear
-          // mid-interaction the way an auto-hide compass would).
+          // Compass — bottom-left, ALWAYS visible. Single tap snaps the
+          // camera back to north. Heading-up is now driven entirely by the
+          // auto-at-4mph speed logic (toggleable in Settings); the old
+          // double-tap-to-toggle felt clunky and was removed.
           Positioned(
             left: 12,
             bottom: 130, // sits above the Flutter scale bar at bottom 96
             child: ValueListenableBuilder<_Camera>(
               valueListenable: _camera,
               builder: (_, cam, _) {
-                final headingUp = _currentSettings?.headingUp ?? false;
-                return GestureDetector(
-                  onDoubleTap: () async {
-                    HapticFeedback.mediumImpact();
-                    final s = _currentSettings;
-                    if (s == null) return;
-                    await ref
-                        .read(settingsControllerProvider.notifier)
-                        .save(s.copyWith(headingUp: !s.headingUp));
-                    if (s.headingUp) {
-                      // Was on, just turned off — snap back to north.
-                      await _eval('resetBearing()');
-                    }
+                final inHeadsUp = _autoHeadUpActive;
+                return FloatingActionButton.small(
+                  heroTag: 'compass',
+                  backgroundColor: inHeadsUp
+                      ? Colors.amber.withValues(alpha: 0.85)
+                      : Colors.black.withValues(alpha: 0.6),
+                  onPressed: () async {
+                    HapticFeedback.selectionClick();
+                    await _eval('resetBearing()');
                   },
-                  child: FloatingActionButton.small(
-                    heroTag: 'compass',
-                    backgroundColor: headingUp
-                        ? Colors.amber.withValues(alpha: 0.85)
-                        : Colors.black.withValues(alpha: 0.6),
-                    onPressed: () async {
-                      HapticFeedback.selectionClick();
-                      await _eval('resetBearing()');
-                    },
-                    child: Transform.rotate(
-                      angle: -cam.bearing * 3.14159265 / 180,
-                      child: Icon(
-                        headingUp ? Icons.my_location : Icons.navigation,
-                        color: headingUp ? Colors.black87 : Colors.white,
-                      ),
+                  child: Transform.rotate(
+                    angle: -cam.bearing * 3.14159265 / 180,
+                    child: Icon(
+                      inHeadsUp ? Icons.my_location : Icons.navigation,
+                      color: inHeadsUp ? Colors.black87 : Colors.white,
                     ),
                   ),
                 );
@@ -1428,12 +1779,33 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
               ],
             ),
           ),
+          // Freehand draw overlay — only mounted when in draw mode AND the
+          // user has flipped the "Freehand" switch in the drawing panel.
+          // The Listener captures pointer events directly (opaque, so the
+          // WebView below never sees them) and disambiguates 1 finger →
+          // freehand draw, 2 fingers → map pan/pinch/rotate via JS bridge.
+          if (_drawing && _freehand)
+            Positioned.fill(
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: _freehandPointerDown,
+                onPointerMove: _freehandPointerMove,
+                onPointerUp: _freehandPointerUp,
+                onPointerCancel: _freehandPointerCancel,
+                child: _freehandActive
+                    ? CustomPaint(
+                        painter: _FreehandPainter(_freehandPts))
+                    : const SizedBox.expand(),
+              ),
+            ),
           if (_drawing)
             _DrawingPanel(
               points: _draft.length,
               snap: _snap,
               snapping: _snapping,
+              freehand: _freehand,
               onToggleSnap: (v) => setState(() => _snap = v),
+              onToggleFreehand: (v) => setState(() => _freehand = v),
               onUndo: _draft.isEmpty
                   ? null
                   : () {
@@ -1837,11 +2209,16 @@ class _ScaleBar extends StatelessWidget {
     }
   }
 
-  /// 1, 2, 5, 10, 20, 50, 100, 200, 500, … — pick the highest such number ≤ x.
+  /// …0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, … — pick the highest such number ≤ x.
+  ///
+  /// The previous version derived magnitude from `x.toString().split('.')[0]
+  /// .length`, which rounds any sub-1 value up to 1 (e.g. 0.3 mi → 1 mi),
+  /// giving a 3× discrepancy between the scale bar and the route distance.
+  /// Using `log10` gives the right magnitude for fractional inputs too.
   double _niceNumber(double x) {
     if (x <= 0) return 1;
-    final mag = math.pow(10, x.abs().toString().split('.')[0].length - 1)
-        .toDouble();
+    final exp = math.log(x) / math.ln10;
+    final mag = math.pow(10, exp.floor()).toDouble();
     final norm = x / mag;
     final nice = norm >= 5
         ? 5.0
@@ -2157,7 +2534,9 @@ class _DrawingPanel extends StatelessWidget {
     required this.points,
     required this.snap,
     required this.snapping,
+    required this.freehand,
     required this.onToggleSnap,
+    required this.onToggleFreehand,
     required this.onUndo,
     required this.onCancel,
     required this.onSave,
@@ -2165,7 +2544,9 @@ class _DrawingPanel extends StatelessWidget {
   final int points;
   final bool snap;
   final bool snapping;
+  final bool freehand;
   final ValueChanged<bool> onToggleSnap;
+  final ValueChanged<bool> onToggleFreehand;
   final VoidCallback? onUndo;
   final VoidCallback onCancel;
   final VoidCallback? onSave;
@@ -2182,13 +2563,23 @@ class _DrawingPanel extends StatelessWidget {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             SwitchListTile(
               contentPadding: EdgeInsets.zero, dense: true,
+              value: freehand, onChanged: onToggleFreehand,
+              title: const Text('Freehand draw'),
+              subtitle: const Text(
+                  'Drag your finger to draw. Releases auto-snap if Snap-to-trail is on.'),
+              secondary: const Icon(Icons.gesture),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero, dense: true,
               value: snap, onChanged: onToggleSnap,
               title: const Text('Snap to trail'),
               secondary: snapping
                   ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.route),
             ),
-            Text('Tap the map to add points · $points'),
+            Text(freehand
+                ? 'Drag to draw · $points pts'
+                : 'Tap the map to add points · $points'),
             const SizedBox(height: 8),
             Row(children: [
               Expanded(child: OutlinedButton.icon(onPressed: onUndo, icon: const Icon(Icons.undo), label: const Text('Undo'))),
@@ -2202,6 +2593,35 @@ class _DrawingPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Renders the live finger-drag polyline during a freehand draw. Sits
+/// inside the GestureDetector overlay so the user can see what they've
+/// drawn before lift; the path is replaced by the real (snapped) line on
+/// finger-up.
+class _FreehandPainter extends CustomPainter {
+  _FreehandPainter(this.points);
+  final List<Offset> points;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+    final paint = Paint()
+      ..color = Colors.lightBlueAccent
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final p = ui.Path()..moveTo(points.first.dx, points.first.dy);
+    for (int i = 1; i < points.length; i++) {
+      p.lineTo(points[i].dx, points[i].dy);
+    }
+    canvas.drawPath(p, paint);
+  }
+
+  @override
+  bool shouldRepaint(_FreehandPainter old) =>
+      old.points.length != points.length;
 }
 
 // ===========================================================================

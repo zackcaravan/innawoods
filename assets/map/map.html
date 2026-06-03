@@ -196,6 +196,531 @@
           map.fitBounds([[sw_lng, sw_lat], [ne_lng, ne_lat]],
             { padding: 60, animate: true, duration: 600 });
         };
+
+        // Convert a screen (x,y) point to lat/lng — used by the freehand
+        // drawing overlay to translate finger taps into route geometry.
+        window.screenToLatLng = (x, y) => {
+          const c = map.unproject([x, y]);
+          return JSON.stringify({ lng: c.lng, lat: c.lat });
+        };
+
+        // Variant of flyTo that keeps the camera at a caller-chosen zoom
+        // (vs. snapping to a default). Used by Recenter so the user's
+        // current zoom is preserved when they hop back to themselves.
+        window.flyToZoom = (lng, lat, zoom) => {
+          map.flyTo({ center: [lng, lat], zoom: zoom, duration: 600 });
+        };
+
+        // Pan the camera by a pixel offset, no animation. Called from the
+        // Flutter freehand overlay when the user does a two-finger drag,
+        // since that overlay sits above the WebView and would otherwise
+        // swallow the gesture.
+        window.panBy = (dx, dy) => {
+          map.panBy([dx, dy], { animate: false });
+        };
+
+        // Apply an incremental zoom around a pixel-space anchor. Same
+        // origin story as panBy — two-finger pinch routed from Flutter.
+        window.zoomBy = (deltaZ, anchorX, anchorY) => {
+          const cur = map.getZoom();
+          const target = Math.min(22, Math.max(0, cur + deltaZ));
+          map.easeTo({
+            zoom: target,
+            around: map.unproject([anchorX, anchorY]),
+            duration: 0,
+          });
+        };
+
+        // Rotate the camera by a delta (degrees) around a pixel-space
+        // anchor. Two-finger twist routed from Flutter.
+        window.rotateBy = (deltaBearing, anchorX, anchorY) => {
+          const cur = map.getBearing();
+          map.easeTo({
+            bearing: cur + deltaBearing,
+            around: map.unproject([anchorX, anchorY]),
+            duration: 0,
+          });
+        };
+
+        // Tilt the camera by a delta (degrees). MapLibre clamps to
+        // [0, 85]; pitching with a two-finger vertical drag motion when
+        // the fingers stay close in X is the standard convention.
+        window.pitchBy = (deltaPitch) => {
+          const cur = map.getPitch();
+          const target = Math.min(85, Math.max(0, cur + deltaPitch));
+          map.easeTo({ pitch: target, duration: 0 });
+        };
+
+        // Hard repaint — used by Recenter to reload the visible viewport
+        // (in case a tile got stuck mid-stream and the map looks stale).
+        window.refreshMap = () => {
+          try {
+            map.triggerRepaint();
+            // Force the basemap sources to refetch tiles for the current
+            // viewport. Walking through known sources is safer than
+            // assuming names.
+            const ids = ['protomaps', 'dem', 'dem-terrain'];
+            for (const id of ids) {
+              const src = map.getSource(id);
+              if (src && typeof src.reload === 'function') {
+                src.reload();
+              }
+            }
+          } catch (_) {}
+        };
+
+        // Fires once whenever the user actually moves the map themselves
+        // (drag / pinch / rotate). Programmatic flyTo / setBearing don't
+        // trigger this. Flutter listens to disable follow-mode the moment
+        // the user manually pans.
+        let _userInteracting = false;
+        function _emitUserPan() {
+          if (window.flutter_inappwebview) {
+            window.flutter_inappwebview.callHandler('userPan');
+          }
+        }
+        // dragstart/rotatestart/pitchstart with originalEvent set means
+        // a real touch/mouse drove the change.
+        for (const ev of ['dragstart', 'rotatestart', 'pitchstart',
+                          'zoomstart']) {
+          map.on(ev, (e) => {
+            if (e && e.originalEvent) _emitUserPan();
+          });
+        }
+
+        // Batch-convert an array of [x,y] screen points to [lng,lat] map
+        // coords. Used by the freehand draw overlay after pan-end.
+        window.screenPointsToLatLngs = (xyJson) => {
+          let xys;
+          try { xys = JSON.parse(xyJson); } catch (_) { return '[]'; }
+          const out = xys.map(([x, y]) => {
+            const c = map.unproject([x, y]);
+            return [c.lng, c.lat];
+          });
+          return JSON.stringify(out);
+        };
+
+        // ----- Map matching -------------------------------------------------
+        //
+        // Snaps a freehand-drawn polyline to the loaded road/trail network.
+        // For ≥3 observations and a graph rich enough to matter we run a
+        // proper HMM/Viterbi matcher; otherwise we fall back to per-point
+        // nearest-edge projection. The HMM picks edges by combining:
+        //   • emission ~ exp(-d²/(2σ²))   d = drawn→edge perpendicular dist (m)
+        //   • transition ~ exp(-|drawn - graph| / β)
+        //                                  drawn = great-circle between obs
+        //                                  graph = shortest path on the road
+        //                                          graph between the two
+        //                                          projected points
+        // Reconstruction chains the chosen edges through their shortest paths
+        // so the returned polyline traces real road geometry across
+        // intersections, not just teleport-snaps at each observation.
+
+        // Earth-radius haversine in meters.
+        function _haversineM(a, b) {
+          const R = 6371008.8;
+          const toRad = Math.PI / 180;
+          const dLat = (b[1] - a[1]) * toRad;
+          const dLng = (b[0] - a[0]) * toRad;
+          const la1 = a[1] * toRad, la2 = b[1] * toRad;
+          const s = Math.sin(dLat / 2) ** 2 +
+                    Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+          return 2 * R * Math.asin(Math.sqrt(s));
+        }
+
+        // Round a coord to ~1m on the ground (lat 1e-5 ≈ 1.11m) so duplicate
+        // vertices from different tiles collapse into one graph node.
+        function _nodeKey(c) {
+          return c[0].toFixed(5) + ',' + c[1].toFixed(5);
+        }
+
+        // Project (lng,lat) onto edge a→b. Returns { t, point, distMeters }.
+        function _projectOnEdge(coord, a, b) {
+          const p = map.project(coord);
+          const A = map.project(a), B = map.project(b);
+          const dx = B.x - A.x, dy = B.y - A.y;
+          const len2 = dx * dx + dy * dy;
+          if (len2 === 0) {
+            return { t: 0, point: a, distMeters: _haversineM(coord, a) };
+          }
+          let t = ((p.x - A.x) * dx + (p.y - A.y) * dy) / len2;
+          t = Math.max(0, Math.min(1, t));
+          const px = A.x + t * dx, py = A.y + t * dy;
+          const c = map.unproject([px, py]);
+          return {
+            t,
+            point: [c.lng, c.lat],
+            distMeters: _haversineM(coord, [c.lng, c.lat]),
+          };
+        }
+
+        // Tiny binary min-heap for bounded Dijkstra.
+        class _MinHeap {
+          constructor() { this.h = []; }
+          push(item) {
+            this.h.push(item);
+            let i = this.h.length - 1;
+            while (i > 0) {
+              const p = (i - 1) >> 1;
+              if (this.h[p][0] <= this.h[i][0]) break;
+              [this.h[p], this.h[i]] = [this.h[i], this.h[p]];
+              i = p;
+            }
+          }
+          pop() {
+            const top = this.h[0];
+            const last = this.h.pop();
+            if (this.h.length > 0) {
+              this.h[0] = last;
+              let i = 0;
+              const n = this.h.length;
+              while (true) {
+                let l = i * 2 + 1, r = l + 1, m = i;
+                if (l < n && this.h[l][0] < this.h[m][0]) m = l;
+                if (r < n && this.h[r][0] < this.h[m][0]) m = r;
+                if (m === i) break;
+                [this.h[i], this.h[m]] = [this.h[m], this.h[i]];
+                i = m;
+              }
+            }
+            return top;
+          }
+          get size() { return this.h.length; }
+        }
+
+        // Build an adjacency-list graph from the loaded road features.
+        function _buildRoadGraph() {
+          const nodes = new Map();
+          const edges = [];
+          let roads = [];
+          try {
+            roads = map.querySourceFeatures('protomaps',
+              { sourceLayer: 'roads' });
+          } catch (_) { return { nodes, edges }; }
+          const seen = new Set();
+          for (const r of roads) {
+            const g = r.geometry;
+            const lines = g.type === 'LineString' ? [g.coordinates] :
+                          g.type === 'MultiLineString' ? g.coordinates : [];
+            for (const ls of lines) {
+              for (let i = 0; i < ls.length - 1; i++) {
+                const ac = ls[i], bc = ls[i + 1];
+                const a = _nodeKey(ac), b = _nodeKey(bc);
+                if (a === b) continue;
+                const dedup = a < b ? a + '|' + b : b + '|' + a;
+                if (seen.has(dedup)) continue;
+                seen.add(dedup);
+                const len = _haversineM(ac, bc);
+                const id = edges.length;
+                edges.push({ a, b, ac, bc, len, id });
+                if (!nodes.has(a)) nodes.set(a, { coord: ac, edges: [] });
+                if (!nodes.has(b)) nodes.set(b, { coord: bc, edges: [] });
+                nodes.get(a).edges.push({ to: b, len, id });
+                nodes.get(b).edges.push({ to: a, len, id });
+              }
+            }
+          }
+          return { nodes, edges };
+        }
+
+        // Bounded Dijkstra from a point on `edge` (parameter t). Returns
+        // a map node-key → distance in meters, capped at `maxDist`.
+        function _dijkstraFromEdgePoint(graph, edge, t, maxDist) {
+          const dist = new Map();
+          const heap = new _MinHeap();
+          const dA = edge.len * t;
+          const dB = edge.len * (1 - t);
+          dist.set(edge.a, dA);
+          dist.set(edge.b, dB);
+          heap.push([dA, edge.a]);
+          heap.push([dB, edge.b]);
+          let visited = 0;
+          while (heap.size && visited < 200) {
+            const [d, u] = heap.pop();
+            if (d > (dist.get(u) ?? Infinity)) continue;
+            if (d > maxDist) break;
+            visited++;
+            const node = graph.nodes.get(u);
+            if (!node) continue;
+            for (const e of node.edges) {
+              const nd = d + e.len;
+              if (nd > maxDist) continue;
+              if (nd < (dist.get(e.to) ?? Infinity)) {
+                dist.set(e.to, nd);
+                heap.push([nd, e.to]);
+              }
+            }
+          }
+          return dist;
+        }
+
+        // Dijkstra that also tracks predecessor — used during geometry
+        // reconstruction so we can walk the actual path between two
+        // edge-projected points instead of teleporting.
+        function _dijkstraWithPrev(graph, startEdge, startT, maxDist) {
+          const dist = new Map();
+          const prev = new Map();
+          const heap = new _MinHeap();
+          const dA = startEdge.len * startT;
+          const dB = startEdge.len * (1 - startT);
+          dist.set(startEdge.a, dA);
+          dist.set(startEdge.b, dB);
+          heap.push([dA, startEdge.a]);
+          heap.push([dB, startEdge.b]);
+          let visited = 0;
+          while (heap.size && visited < 400) {
+            const [d, u] = heap.pop();
+            if (d > (dist.get(u) ?? Infinity)) continue;
+            if (d > maxDist) break;
+            visited++;
+            const node = graph.nodes.get(u);
+            if (!node) continue;
+            for (const e of node.edges) {
+              const nd = d + e.len;
+              if (nd > maxDist) continue;
+              if (nd < (dist.get(e.to) ?? Infinity)) {
+                dist.set(e.to, nd);
+                prev.set(e.to, u);
+                heap.push([nd, e.to]);
+              }
+            }
+          }
+          return { dist, prev };
+        }
+
+        function _walkBack(prev, end) {
+          const chain = [end];
+          let cur = end;
+          let guard = 0;
+          while (prev.has(cur) && guard++ < 500) {
+            cur = prev.get(cur);
+            chain.push(cur);
+          }
+          chain.reverse();
+          return chain;
+        }
+
+        function _interp(a, b, t) {
+          return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        }
+
+        // Reconstruct the polyline going from a projection on startEdge to
+        // a projection on targetEdge, by walking the Dijkstra prev map and
+        // joining the leading/trailing edge fractions.
+        function _reconstructPath(graph, startEdge, startT, targetEdge,
+                                  targetT, dijk) {
+          const startCoord = _interp(startEdge.ac, startEdge.bc, startT);
+          const endCoord = _interp(targetEdge.ac, targetEdge.bc, targetT);
+          // Pick whichever of targetEdge's endpoints is closer via the graph.
+          const distA = dijk.dist.get(targetEdge.a);
+          const distB = dijk.dist.get(targetEdge.b);
+          let reachedKey;
+          if (distA != null && distB != null) {
+            // Prefer the endpoint that, combined with the trailing fraction,
+            // yields the shorter overall path.
+            const totalA = distA + targetT * targetEdge.len;
+            const totalB = distB + (1 - targetT) * targetEdge.len;
+            reachedKey = totalA <= totalB ? targetEdge.a : targetEdge.b;
+          } else if (distA != null) {
+            reachedKey = targetEdge.a;
+          } else if (distB != null) {
+            reachedKey = targetEdge.b;
+          } else {
+            // No path within budget — fall back to a direct line.
+            return [startCoord, endCoord];
+          }
+          const chain = _walkBack(dijk.prev, reachedKey);
+          const pts = [startCoord];
+          for (const k of chain) {
+            const node = graph.nodes.get(k);
+            if (node) pts.push(node.coord);
+          }
+          pts.push(endCoord);
+          return pts;
+        }
+
+        // Per-point nearest-edge fallback (the Phase-1 behaviour). Used
+        // when input is too sparse for HMM to matter, or HMM bailed out.
+        function _snapNearestEdge(coords, graph) {
+          if (graph.edges.length === 0) return JSON.stringify(coords);
+          const out = coords.map(([lng, lat]) => {
+            let bestDist = Infinity, bestPt = null;
+            for (const e of graph.edges) {
+              const proj = _projectOnEdge([lng, lat], e.ac, e.bc);
+              if (proj.distMeters < bestDist) {
+                bestDist = proj.distMeters;
+                bestPt = proj.point;
+              }
+            }
+            if (bestDist > 30 || bestPt == null) return [lng, lat];
+            return bestPt;
+          });
+          return JSON.stringify(out);
+        }
+
+        function _runHmm(obs, graph) {
+          const K = 4;                 // candidates per observation
+          const sigmaM = 20;           // emission stddev (m)
+          const beta = 50;             // transition lengthscale (m)
+          const maxJumpFactor = 3;     // shortest-path search cap per step
+
+          // 1. Candidates per observation: K nearest edges by projection.
+          const cands = obs.map((o) => {
+            const scored = [];
+            for (const e of graph.edges) {
+              const proj = _projectOnEdge(o, e.ac, e.bc);
+              scored.push({ edge: e, t: proj.t, point: proj.point,
+                            distM: proj.distMeters });
+            }
+            scored.sort((a, b) => a.distM - b.distM);
+            // Drop candidates beyond 100m — almost certainly off-trail.
+            return scored.slice(0, K).filter((c) => c.distM <= 100);
+          });
+          for (const c of cands) if (c.length === 0) return null;
+
+          const obsStep = [];
+          for (let i = 1; i < obs.length; i++) {
+            obsStep.push(_haversineM(obs[i - 1], obs[i]));
+          }
+
+          // 2. Viterbi in log-space.
+          const NEG_INF = -1e9;
+          const T = obs.length;
+          const dp = new Array(T);
+          const back = new Array(T);
+          dp[0] = cands[0].map((c) =>
+            -(c.distM * c.distM) / (2 * sigmaM * sigmaM));
+          back[0] = cands[0].map(() => -1);
+
+          for (let t = 1; t < T; t++) {
+            const here = cands[t];
+            const prev = cands[t - 1];
+            const stepDrawn = obsStep[t - 1];
+            const maxJump = Math.max(stepDrawn * maxJumpFactor, 100);
+            dp[t] = new Array(here.length).fill(NEG_INF);
+            back[t] = new Array(here.length).fill(-1);
+            for (let i = 0; i < prev.length; i++) {
+              if (dp[t - 1][i] <= NEG_INF) continue;
+              const dists = _dijkstraFromEdgePoint(
+                  graph, prev[i].edge, prev[i].t, maxJump);
+              for (let j = 0; j < here.length; j++) {
+                let graphDist;
+                if (prev[i].edge.id === here[j].edge.id) {
+                  graphDist = Math.abs(here[j].t - prev[i].t) *
+                              prev[i].edge.len;
+                } else {
+                  const dA = (dists.get(here[j].edge.a) ?? Infinity) +
+                             here[j].t * here[j].edge.len;
+                  const dB = (dists.get(here[j].edge.b) ?? Infinity) +
+                             (1 - here[j].t) * here[j].edge.len;
+                  graphDist = Math.min(dA, dB);
+                }
+                if (!isFinite(graphDist)) continue;
+                const logTrans = -Math.abs(stepDrawn - graphDist) / beta;
+                const emission = -(here[j].distM * here[j].distM) /
+                                 (2 * sigmaM * sigmaM);
+                const score = dp[t - 1][i] + logTrans + emission;
+                if (score > dp[t][j]) {
+                  dp[t][j] = score;
+                  back[t][j] = i;
+                }
+              }
+            }
+          }
+
+          // 3. Best terminal state + traceback.
+          let bestEnd = 0;
+          for (let j = 1; j < dp[T - 1].length; j++) {
+            if (dp[T - 1][j] > dp[T - 1][bestEnd]) bestEnd = j;
+          }
+          if (dp[T - 1][bestEnd] <= NEG_INF) return null;
+          const path = new Array(T);
+          path[T - 1] = bestEnd;
+          for (let t = T - 1; t > 0; t--) {
+            path[t - 1] = back[t][path[t]];
+            if (path[t - 1] < 0) return null;
+          }
+
+          // 4. Reconstruct geometry — chain shortest paths between
+          // consecutive chosen edges so the line follows real roads.
+          const out = [cands[0][path[0]].point];
+          for (let t = 1; t < T; t++) {
+            const prevC = cands[t - 1][path[t - 1]];
+            const curC = cands[t][path[t]];
+            if (prevC.edge.id === curC.edge.id) {
+              out.push(curC.point);
+              continue;
+            }
+            const stepDrawn = obsStep[t - 1];
+            const maxJump = Math.max(stepDrawn * maxJumpFactor, 100);
+            const dijk = _dijkstraWithPrev(
+                graph, prevC.edge, prevC.t, maxJump);
+            const seg = _reconstructPath(
+                graph, prevC.edge, prevC.t, curC.edge, curC.t, dijk);
+            for (let k = 1; k < seg.length; k++) out.push(seg[k]);
+          }
+          return out;
+        }
+
+        // Public entry point invoked from Dart after a freehand pan-end.
+        window.snapToRoads = (coordsJson) => {
+          let coords;
+          try { coords = JSON.parse(coordsJson); }
+          catch (_) { return coordsJson; }
+          if (!coords || coords.length < 2) return coordsJson;
+          const graph = _buildRoadGraph();
+          if (graph.edges.length < 4 || coords.length < 3) {
+            return _snapNearestEdge(coords, graph);
+          }
+          try {
+            const matched = _runHmm(coords, graph);
+            if (matched && matched.length >= 2) return JSON.stringify(matched);
+          } catch (_) { /* fall through */ }
+          return _snapNearestEdge(coords, graph);
+        };
+
+        // Off-road style — mute highways + amplify trails. Reversible.
+        // We track per-layer original paint values so toggling back restores
+        // the basemap exactly.
+        const _origPaint = {};
+        window.setOffRoadStyle = (on) => {
+          // Highways + major roads — make narrower + a touch muted.
+          const dim = ['roads_highway', 'roads_major', 'roads_bridges_highway',
+            'roads_bridges_major', 'roads_link', 'roads_bridges_link'];
+          for (const lid of dim) {
+            if (!map.getLayer(lid)) continue;
+            if (on) {
+              if (!_origPaint[lid]) {
+                _origPaint[lid] = {
+                  width: map.getPaintProperty(lid, 'line-width'),
+                  color: map.getPaintProperty(lid, 'line-color'),
+                };
+              }
+              // Reduce width by ~40%; tint slightly toward tan.
+              map.setPaintProperty(lid, 'line-width', [
+                'interpolate', ['linear'], ['zoom'],
+                8, 0.6, 12, 1.2, 16, 3,
+              ]);
+              map.setPaintProperty(lid, 'line-color', '#c89a5c');
+            } else if (_origPaint[lid]) {
+              map.setPaintProperty(lid, 'line-width', _origPaint[lid].width);
+              map.setPaintProperty(lid, 'line-color', _origPaint[lid].color);
+            }
+          }
+          // Trails overlay layer — make it thicker + brighter when on.
+          if (map.getLayer('overlay-trails')) {
+            map.setPaintProperty('overlay-trails', 'line-width', on
+                ? ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4, 17, 6]
+                : ['interpolate', ['linear'], ['zoom'], 10, 1.2, 14, 2.5, 17, 4]);
+            map.setPaintProperty('overlay-trails', 'line-color',
+                on ? '#ff3d00' : '#ff5722');
+          }
+          // Boost hillshade for stronger relief.
+          if (map.getLayer('hillshade')) {
+            map.setPaintProperty('hillshade', 'hillshade-exaggeration',
+                on ? 1.4 : 1.0);
+          }
+        };
         // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.
         let demExag = 1.2;
         let terrainOn = false;

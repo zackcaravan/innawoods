@@ -1185,11 +1185,43 @@ class _PartyMessagesProviderElement
   String get partyId => (origin as PartyMessagesProvider).partyId;
 }
 
-String _$locationSharingHash() => r'bbecdb0e3d17bb1a238aa47cf32e7b281bf3f01f';
+String _$selfPositionHash() => r'5f44d56e3d06a3a1e8afc548a553d6205953f107';
 
-/// Controls whether this device is broadcasting its own (encrypted) location to
-/// a party. The map screen turns this on while it's open. Publishes on the
-/// user-configured interval (default 30 s, up to 5 min) to save battery.
+/// Live continuous GPS stream for THIS device. Powers the local UI (camera
+/// follow, heading-up auto-mode, instant self-dot updates) without waiting
+/// on the Supabase round-trip. Survives screen reloads via keepAlive.
+///
+/// Uses `getPositionStream` with a 5 m distanceFilter — the OS will only
+/// wake the listener when the user actually moves that far, which keeps
+/// battery sane while still feeling responsive at a walking pace (5 m at
+/// 4 mph ≈ a fresh fix every 2.8 s).
+///
+/// Copied from [selfPosition].
+@ProviderFor(selfPosition)
+final selfPositionProvider = StreamProvider<Position>.internal(
+  selfPosition,
+  name: r'selfPositionProvider',
+  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
+      ? null
+      : _$selfPositionHash,
+  dependencies: null,
+  allTransitiveDependencies: null,
+);
+
+@Deprecated('Will be removed in 3.0. Use Ref instead')
+// ignore: unused_element
+typedef SelfPositionRef = StreamProviderRef<Position>;
+String _$locationSharingHash() => r'3edf5cff3b2fd5736c52f5029166fb53c5f414ca';
+
+/// Controls whether this device is broadcasting its own (encrypted) location
+/// to a party. The map screen turns this on while it's open.
+///
+/// Previously this polled `getCurrentPosition` on a 30 s timer, which makes
+/// the dot feel frozen between fixes even at a brisk walk (54 m gap per
+/// tick). Now we subscribe to [selfPositionProvider] and throttle the
+/// Supabase publish to no faster than the user's configured interval (still
+/// 30 s default, up to 5 min) — so the local UI is smooth but server load /
+/// battery cost match the old behaviour.
 ///
 /// Copied from [LocationSharing].
 @ProviderFor(LocationSharing)

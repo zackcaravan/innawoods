@@ -13,6 +13,8 @@ class AppSettings {
     this.nightMode = false,
     this.headingUp = false,
     this.tripMode = false,
+    this.offRoadStyle = false,
+    this.autoHeadingUp = true,
   });
 
   /// How often to publish your position. 30 s default; up to 5 min to save battery.
@@ -42,6 +44,15 @@ class AppSettings {
   /// badge on the map.
   final bool tripMode;
 
+  /// Re-styles the basemap for off-road readability — narrower muted highways,
+  /// bolder trails, stronger hillshade. Reversible.
+  final bool offRoadStyle;
+
+  /// Automatically flips into heading-up mode while moving at ≥ 4 mph so the
+  /// map rotates to your travel direction. Returns to north-up when you stop.
+  /// Off → heading-up is a manual toggle only (compass double-tap).
+  final bool autoHeadingUp;
+
   /// Effective location-publish interval (in seconds) accounting for trip mode.
   int get effectiveLocationIntervalSeconds =>
       tripMode ? 90 : locationIntervalSeconds;
@@ -55,6 +66,8 @@ class AppSettings {
     bool? nightMode,
     bool? headingUp,
     bool? tripMode,
+    bool? offRoadStyle,
+    bool? autoHeadingUp,
   }) =>
       AppSettings(
         locationIntervalSeconds:
@@ -66,6 +79,8 @@ class AppSettings {
         nightMode: nightMode ?? this.nightMode,
         headingUp: headingUp ?? this.headingUp,
         tripMode: tripMode ?? this.tripMode,
+        offRoadStyle: offRoadStyle ?? this.offRoadStyle,
+        autoHeadingUp: autoHeadingUp ?? this.autoHeadingUp,
       );
 }
 
@@ -78,6 +93,8 @@ class SettingsStore {
   static const _kNightMode = 'innawoods.settings.nightMode';
   static const _kHeadingUp = 'innawoods.settings.headingUp';
   static const _kTripMode = 'innawoods.settings.tripMode';
+  static const _kOffRoadStyle = 'innawoods.settings.offRoadStyle';
+  static const _kAutoHeadingUp = 'innawoods.settings.autoHeadingUp';
 
   Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -91,6 +108,8 @@ class SettingsStore {
       nightMode: prefs.getBool(_kNightMode) ?? false,
       headingUp: prefs.getBool(_kHeadingUp) ?? false,
       tripMode: prefs.getBool(_kTripMode) ?? false,
+      offRoadStyle: prefs.getBool(_kOffRoadStyle) ?? false,
+      autoHeadingUp: prefs.getBool(_kAutoHeadingUp) ?? true,
     );
   }
 
@@ -104,5 +123,7 @@ class SettingsStore {
     await prefs.setBool(_kNightMode, s.nightMode);
     await prefs.setBool(_kHeadingUp, s.headingUp);
     await prefs.setBool(_kTripMode, s.tripMode);
+    await prefs.setBool(_kOffRoadStyle, s.offRoadStyle);
+    await prefs.setBool(_kAutoHeadingUp, s.autoHeadingUp);
   }
 }

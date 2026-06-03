@@ -17,6 +17,7 @@ class MapsScreen extends ConsumerWidget {
         ref.watch(downloadedRegionsProvider).valueOrNull ?? const [];
     final active = ref.watch(activeRegionProvider).valueOrNull;
     final inFlight = ref.watch(regionDownloadControllerProvider);
+    final demInFlight = ref.watch(demPrefetchControllerProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -50,6 +51,10 @@ class MapsScreen extends ConsumerWidget {
                   isDownloaded: downloaded.contains(r.id),
                   isActive: active == r.id,
                   progress: inFlight[r.id],
+                  demProgress: demInFlight[r.id],
+                  demError: ref
+                      .read(demPrefetchControllerProvider.notifier)
+                      .errorFor(r.id),
                   error: ref
                       .read(regionDownloadControllerProvider.notifier)
                       .errorFor(r.id),
@@ -70,6 +75,8 @@ class _RegionTile extends ConsumerWidget {
     required this.isActive,
     required this.progress,
     required this.error,
+    required this.demProgress,
+    required this.demError,
   });
 
   final MapRegion region;
@@ -77,15 +84,20 @@ class _RegionTile extends ConsumerWidget {
   final bool isActive;
   final RegionDownloadProgress? progress;
   final String? error;
+  final DemPrefetchProgress? demProgress;
+  final String? demError;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ctrl = ref.read(regionDownloadControllerProvider.notifier);
+    final demCtrl = ref.read(demPrefetchControllerProvider.notifier);
     final subtitle = progress != null
         ? _progressLabel(progress!)
-        : (isDownloaded
-            ? (isActive ? 'Active · ${region.sizeLabel}' : region.sizeLabel)
-            : '${region.sizeLabel} · not downloaded');
+        : demProgress != null
+            ? _demProgressLabel(demProgress!)
+            : (isDownloaded
+                ? (isActive ? 'Active · ${region.sizeLabel}' : region.sizeLabel)
+                : '${region.sizeLabel} · not downloaded');
 
     Widget? trailing;
     if (progress != null) {
@@ -94,6 +106,12 @@ class _RegionTile extends ConsumerWidget {
         tooltip: 'Cancel',
         onPressed: () => ctrl.cancel(region.id),
       );
+    } else if (demProgress != null) {
+      trailing = IconButton(
+        icon: const Icon(Icons.close),
+        tooltip: 'Cancel terrain download',
+        onPressed: () => demCtrl.cancel(region.id),
+      );
     } else if (isDownloaded) {
       trailing = PopupMenuButton<String>(
         onSelected: (v) async {
@@ -101,6 +119,8 @@ class _RegionTile extends ConsumerWidget {
             await ref
                 .read(activeRegionProvider.notifier)
                 .setActive(region.id);
+          } else if (v == 'terrain') {
+            await demCtrl.start(region);
           } else if (v == 'delete') {
             await ref.read(regionStoreProvider).delete(region.id);
             ref.invalidate(downloadedRegionsProvider);
@@ -110,6 +130,10 @@ class _RegionTile extends ConsumerWidget {
         itemBuilder: (_) => [
           if (!isActive)
             const PopupMenuItem(value: 'activate', child: Text('Set active')),
+          const PopupMenuItem(
+            value: 'terrain',
+            child: Text('Download terrain (offline hillshade)'),
+          ),
           const PopupMenuItem(value: 'delete', child: Text('Delete')),
         ],
       );
@@ -132,9 +156,22 @@ class _RegionTile extends ConsumerWidget {
             const SizedBox(height: 6),
             LinearProgressIndicator(value: progress!.fraction),
           ],
+          if (demProgress != null) ...[
+            const SizedBox(height: 6),
+            LinearProgressIndicator(
+              value: demProgress!.total == 0 ? null : demProgress!.fraction,
+              color: Colors.amber,
+            ),
+          ],
           if (error != null) ...[
             const SizedBox(height: 4),
             Text(error!,
+                style:
+                    const TextStyle(color: Colors.redAccent, fontSize: 12)),
+          ],
+          if (demError != null) ...[
+            const SizedBox(height: 4),
+            Text('Terrain: $demError',
                 style:
                     const TextStyle(color: Colors.redAccent, fontSize: 12)),
           ],
@@ -156,5 +193,11 @@ class _RegionTile extends ConsumerWidget {
     final mbTot = (p.total / (1024 * 1024)).toStringAsFixed(0);
     final pct = (p.fraction * 100).toStringAsFixed(0);
     return 'Downloading $mbDone / $mbTot MB ($pct%)';
+  }
+
+  String _demProgressLabel(DemPrefetchProgress p) {
+    if (p.total == 0) return 'Terrain: queuing tiles…';
+    final pct = (p.fraction * 100).toStringAsFixed(0);
+    return 'Terrain ${p.done} / ${p.total} tiles ($pct%)';
   }
 }

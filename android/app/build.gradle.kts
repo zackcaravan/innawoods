@@ -1,8 +1,30 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing — reads either from `android/key.properties` (local Studio
+// builds) or from environment variables (CI on Codemagic). Falls back to the
+// debug keystore when neither is present so `flutter build apk --debug` and
+// dev day-to-day work keep working without any local secrets.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
+fun signingConfigured(): Boolean {
+    val hasFileProps = keystoreProperties.containsKey("storeFile")
+    val hasEnvVars = System.getenv("CM_KEYSTORE_PATH") != null &&
+                     System.getenv("CM_KEYSTORE_PASSWORD") != null &&
+                     System.getenv("CM_KEY_ALIAS") != null &&
+                     System.getenv("CM_KEY_PASSWORD") != null
+    return hasFileProps || hasEnvVars
 }
 
 android {
@@ -22,21 +44,41 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.innawoods.innawoods"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (signingConfigured()) {
+            create("release") {
+                if (System.getenv("CM_KEYSTORE_PATH") != null) {
+                    storeFile = file(System.getenv("CM_KEYSTORE_PATH"))
+                    storePassword = System.getenv("CM_KEYSTORE_PASSWORD")
+                    keyAlias = System.getenv("CM_KEY_ALIAS")
+                    keyPassword = System.getenv("CM_KEY_PASSWORD")
+                } else {
+                    storeFile = file(keystoreProperties["storeFile"] as String)
+                    storePassword = keystoreProperties["storePassword"] as String
+                    keyAlias = keystoreProperties["keyAlias"] as String
+                    keyPassword = keystoreProperties["keyPassword"] as String
+                }
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Use the real release keystore if it's configured (CI or a local
+            // dev who set up key.properties); otherwise sign with debug so
+            // `flutter run --release` still works on a dev machine.
+            signingConfig = if (signingConfigured()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

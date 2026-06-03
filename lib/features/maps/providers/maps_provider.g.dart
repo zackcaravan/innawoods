@@ -100,5 +100,30 @@ final regionDownloadControllerProvider =
 
 typedef _$RegionDownloadController =
     Notifier<Map<String, RegionDownloadProgress>>;
+String _$demPrefetchControllerHash() =>
+    r'1fd513573e6f8e136a470ac609aa5a31873b0928';
+
+/// Walks the bbox of a region at zoom 6..10 and pulls every DEM tile through
+/// [MapTileServer]'s normal proxy path — populating the on-disk cache so the
+/// hillshade renders offline. Cancellable, idempotent (already-cached tiles
+/// are skipped), survives back-grounding.
+///
+/// Copied from [DemPrefetchController].
+@ProviderFor(DemPrefetchController)
+final demPrefetchControllerProvider =
+    NotifierProvider<
+      DemPrefetchController,
+      Map<String, DemPrefetchProgress>
+    >.internal(
+      DemPrefetchController.new,
+      name: r'demPrefetchControllerProvider',
+      debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
+          ? null
+          : _$demPrefetchControllerHash,
+      dependencies: null,
+      allTransitiveDependencies: null,
+    );
+
+typedef _$DemPrefetchController = Notifier<Map<String, DemPrefetchProgress>>;
 // ignore_for_file: type=lint
 // ignore_for_file: subtype_of_sealed_class, invalid_use_of_internal_member, invalid_use_of_visible_for_testing_member, deprecated_member_use_from_same_package

@@ -57,6 +57,12 @@ assets/map/*.pmtiles
 CONVERSATION_TRANSCRIPT.md
 .claude/
 
+# Android signing — keystore lives in Codemagic or locally on disk; never repo.
+android/key.properties
+android/app/*.jks
+android/app/*.keystore
+android/*.jks
+
 # iOS code-signing artifacts (managed by Codemagic / Xcode).
 ios/Pods/
 ios/.symlinks/

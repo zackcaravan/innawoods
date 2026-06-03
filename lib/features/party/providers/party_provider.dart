@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../shared/models/chat_message.dart';
@@ -138,16 +139,43 @@ ChatService chatService(Ref ref) => ChatService(
 Stream<List<ChatMessage>> partyMessages(Ref ref, String partyId) =>
     ref.watch(chatServiceProvider).watch(partyId);
 
-/// Controls whether this device is broadcasting its own (encrypted) location to
-/// a party. The map screen turns this on while it's open. Publishes on the
-/// user-configured interval (default 30 s, up to 5 min) to save battery.
+/// Live continuous GPS stream for THIS device. Powers the local UI (camera
+/// follow, heading-up auto-mode, instant self-dot updates) without waiting
+/// on the Supabase round-trip. Survives screen reloads via keepAlive.
+///
+/// Uses `getPositionStream` with a 5 m distanceFilter — the OS will only
+/// wake the listener when the user actually moves that far, which keeps
+/// battery sane while still feeling responsive at a walking pace (5 m at
+/// 4 mph ≈ a fresh fix every 2.8 s).
+@Riverpod(keepAlive: true)
+Stream<Position> selfPosition(Ref ref) async* {
+  final publisher = ref.read(locationPublisherProvider);
+  if (!await publisher.ensurePermission()) return;
+  yield* Geolocator.getPositionStream(
+    locationSettings: const LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 5,
+    ),
+  );
+}
+
+/// Controls whether this device is broadcasting its own (encrypted) location
+/// to a party. The map screen turns this on while it's open.
+///
+/// Previously this polled `getCurrentPosition` on a 30 s timer, which makes
+/// the dot feel frozen between fixes even at a brisk walk (54 m gap per
+/// tick). Now we subscribe to [selfPositionProvider] and throttle the
+/// Supabase publish to no faster than the user's configured interval (still
+/// 30 s default, up to 5 min) — so the local UI is smooth but server load /
+/// battery cost match the old behaviour.
 @riverpod
 class LocationSharing extends _$LocationSharing {
-  Timer? _timer;
+  StreamSubscription<Position>? _sub;
+  DateTime? _lastPublishAt;
 
   @override
   bool build() {
-    ref.onDispose(() => _timer?.cancel());
+    ref.onDispose(() => _sub?.cancel());
     return false;
   }
 
@@ -159,28 +187,35 @@ class LocationSharing extends _$LocationSharing {
     if (key == null) return false;
     final uid = ref.read(supabaseClientProvider).auth.currentUser!.id;
     final settings = await ref.read(settingsControllerProvider.future);
+    final interval =
+        Duration(seconds: settings.effectiveLocationIntervalSeconds);
 
-    Future<void> tick() async {
-      final pos = await publisher.current();
-      if (pos != null) {
-        await publisher.publish(
-            partyId: partyId, userId: uid, groupKey: key, position: pos);
-      }
+    Future<void> doPublish(Position pos) async {
+      _lastPublishAt = DateTime.now();
+      await publisher.publish(
+          partyId: partyId, userId: uid, groupKey: key, position: pos);
     }
 
-    _timer?.cancel();
-    await tick(); // publish immediately, then on the interval
-    _timer = Timer.periodic(
-      Duration(seconds: settings.effectiveLocationIntervalSeconds),
-      (_) => tick(),
-    );
+    await _sub?.cancel();
+    // Seed with a fast one-shot so the dot lands somewhere within ~1 s,
+    // even before the stream's distanceFilter has had a chance to fire.
+    final first = await publisher.current();
+    if (first != null) await doPublish(first);
+
+    _sub = ref.read(selfPositionProvider.stream).listen((pos) async {
+      // Server-side throttle: respect the user's battery setting. The local
+      // UI gets every fix (separate listener); only Supabase writes are gated.
+      final last = _lastPublishAt;
+      if (last != null && DateTime.now().difference(last) < interval) return;
+      await doPublish(pos);
+    });
     state = true;
     return true;
   }
 
   void stop() {
-    _timer?.cancel();
-    _timer = null;
+    _sub?.cancel();
+    _sub = null;
     state = false;
   }
 }
