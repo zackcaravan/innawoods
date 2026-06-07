@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/crypto/crypto_service.dart';
@@ -52,6 +55,7 @@ class PartyService {
     });
     final party = Party.fromJson(Map<String, dynamic>.from(row as Map));
     await _secrets.save(party.id, secret);
+    await _rememberCachedParty(party);
     return CreatedParty(party: party, invite: invite);
   }
 
@@ -69,7 +73,34 @@ class PartyService {
     });
     final party = Party.fromJson(Map<String, dynamic>.from(row as Map));
     await _secrets.save(party.id, invite.secret);
+    await _rememberCachedParty(party);
     return party;
+  }
+
+  /// Persist enough of [p] in the local cache that a no-internet relaunch
+  /// can still surface this party on the home screen. Idempotent — same
+  /// party id is overwritten rather than duplicated.
+  Future<void> _rememberCachedParty(Party p) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kCachedParties);
+    final list = <Map<String, dynamic>>[];
+    if (raw != null) {
+      try {
+        for (final e in jsonDecode(raw) as List) {
+          final m = Map<String, dynamic>.from(e as Map);
+          if (m['id'] != p.id) list.add(m);
+        }
+      } catch (_) {/* malformed cache — start fresh */}
+    }
+    list.insert(0, {
+      'id': p.id,
+      'name': p.name,
+      'invite_code': p.inviteCode,
+      'created_by': p.createdBy,
+      'created_at': p.createdAt.toIso8601String(),
+      'ephemeral': p.ephemeral,
+    });
+    await prefs.setString(_kCachedParties, jsonEncode(list));
   }
 
   /// Rebuild the shareable invite link for a party from the locally-stored
@@ -80,20 +111,72 @@ class PartyService {
     return PartyInvite(code: party.inviteCode, secret: secret).toShareLink();
   }
 
+  static const _kCachedParties = 'innawoods.parties.cached_json';
+
   Future<List<Party>> myParties() async {
-    final rows = await _client
-        .from('parties')
-        .select()
-        .order('created_at', ascending: false);
-    return (rows as List)
-        .map((e) => Party.fromJson(Map<String, dynamic>.from(e as Map)))
-        .toList();
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      final rows = await _client
+          .from('parties')
+          .select()
+          .order('created_at', ascending: false);
+      final parties = (rows as List)
+          .map((e) => Party.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+      // Cache so a no-internet relaunch still lists what we already know
+      // about — including the party you need to tap into when out of cell.
+      await prefs.setString(
+        _kCachedParties,
+        jsonEncode([
+          for (final p in parties)
+            {
+              'id': p.id,
+              'name': p.name,
+              'invite_code': p.inviteCode,
+              'created_by': p.createdBy,
+              'created_at': p.createdAt.toIso8601String(),
+              'ephemeral': p.ephemeral,
+            }
+        ]),
+      );
+      return parties;
+    } catch (_) {
+      final raw = prefs.getString(_kCachedParties);
+      if (raw == null) return const [];
+      try {
+        final list = (jsonDecode(raw) as List)
+            .map((e) => Party.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+        return list;
+      } catch (_) {
+        return const [];
+      }
+    }
   }
 
   Future<Party?> party(String partyId) async {
-    final row =
-        await _client.from('parties').select().eq('id', partyId).maybeSingle();
-    return row == null ? null : Party.fromJson(Map<String, dynamic>.from(row));
+    try {
+      final row = await _client
+          .from('parties')
+          .select()
+          .eq('id', partyId)
+          .maybeSingle();
+      if (row != null) {
+        final p = Party.fromJson(Map<String, dynamic>.from(row));
+        await _rememberCachedParty(p);
+        return p;
+      }
+    } catch (_) {/* fall through to cache */}
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kCachedParties);
+    if (raw == null) return null;
+    try {
+      for (final e in jsonDecode(raw) as List) {
+        final m = Map<String, dynamic>.from(e as Map);
+        if (m['id'] == partyId) return Party.fromJson(m);
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<List<PartyMember>> members(String partyId) async {

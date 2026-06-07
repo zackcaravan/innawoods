@@ -71,20 +71,30 @@ class LocationPublisher {
         'user_id': userId,
       },
     );
-    await _client.from('location_updates').upsert({
-      'party_id': partyId,
-      'user_id': userId,
-      'encrypted_payload': payload.toWire(),
-      'updated_at': now.toIso8601String(),
-    }, onConflict: 'party_id,user_id');
-    // Fire-and-forget mesh broadcast. We don't want a stuck BLE write to
-    // block the GPS publish loop; the next fix will retry anyway.
-    try {
-      await _bridge.broadcast(
-        partyId: partyId,
-        type: MeshMsgType.position,
-        ciphertext: payload.toBytes(),
-      );
-    } catch (_) {/* radio busy / not paired — silent */}
+    // Both transports run in parallel, each in its own try-catch so a
+    // Supabase failure (airplane mode) can't block the mesh broadcast and
+    // vice versa. This is the bug we hit during the offline loop test:
+    // sequential await meant Supabase threw first and the mesh broadcast
+    // never fired, so positions stopped flowing the moment cell dropped.
+    final supabaseFuture = () async {
+      try {
+        await _client.from('location_updates').upsert({
+          'party_id': partyId,
+          'user_id': userId,
+          'encrypted_payload': payload.toWire(),
+          'updated_at': now.toIso8601String(),
+        }, onConflict: 'party_id,user_id');
+      } catch (_) {/* offline — mesh is the fallback */}
+    }();
+    final meshFuture = () async {
+      try {
+        await _bridge.broadcast(
+          partyId: partyId,
+          type: MeshMsgType.position,
+          ciphertext: payload.toBytes(),
+        );
+      } catch (_) {/* radio busy / not paired — silent */}
+    }();
+    await Future.wait([supabaseFuture, meshFuture]);
   }
 }

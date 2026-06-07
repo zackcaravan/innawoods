@@ -370,7 +370,7 @@ final locationPublisherProvider =
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef LocationPublisherRef = AutoDisposeProviderRef<LocationPublisher>;
-String _$partyLiveServiceHash() => r'cb164cdcb2c56f99339f049a3a56d416b282b0c8';
+String _$partyLiveServiceHash() => r'cc61692236a6b3a23ac5ffe45d1910644c5d0558';
 
 /// See also [partyLiveService].
 @ProviderFor(partyLiveService)

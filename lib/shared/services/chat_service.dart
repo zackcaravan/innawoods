@@ -29,36 +29,54 @@ class ChatService {
 
   static const _uuid = Uuid();
 
+  /// Local-echo stream so own messages appear in the chat the instant they're
+  /// sent, without waiting for the Supabase round-trip. Critical for offline
+  /// use where the round-trip never completes. Dedupe on msgUuid stops the
+  /// echo from doubling when Supabase eventually catches up online.
+  final StreamController<_LocalChatEcho> _localEchoes =
+      StreamController<_LocalChatEcho>.broadcast();
+
   Future<void> send({required String partyId, required String text}) async {
     final key = await _session.groupKey(partyId);
     if (key == null) throw StateError('No encryption key for this party');
-    // Stable per-message id baked into the ciphertext so receivers can
-    // dedupe regardless of which transport delivered first.
+    final userId = _client.auth.currentUser!.id;
+    // Bake the sender id INSIDE the ciphertext so mesh receivers (which
+    // don't get a Supabase sender_id column) can still attribute the
+    // message to the right callsign. The msgUuid de-dupes across
+    // transports when both deliver the same message.
     final msgUuid = _uuid.v4();
-    final payload = await _crypto.encryptJson(
-        groupKey: key, data: {'text': text, 'uuid': msgUuid});
-    final wire = payload.toWire();
-    // Fan out: Supabase is the primary transport for any device with
-    // internet; the mesh bridge is the redundant transport for devices
-    // out of cell range. Both go in parallel; either alone is enough to
-    // get the message delivered.
-    final supabaseFuture = _client.from('messages').insert({
-      'party_id': partyId,
-      'sender_id': _client.auth.currentUser!.id,
-      'encrypted_payload': wire,
+    final sentAt = DateTime.now().toUtc();
+    final payload = await _crypto.encryptJson(groupKey: key, data: {
+      'text': text,
+      'uuid': msgUuid,
+      'user_id': userId,
     });
-    // Don't fail the whole send if mesh broadcast errors — Supabase is
-    // good enough on its own when paired. Wrap as Future<void> to satisfy
-    // Future.wait's homogeneous-typed requirement.
-    final Future<void> meshFuture = _bridge
-        .broadcast(
+    final wire = payload.toWire();
+    // Local echo first — the user sees their own message immediately even
+    // when both transports fail (e.g. radio busy + cell out).
+    _localEchoes.add(_LocalChatEcho(
+        uuid: msgUuid, text: text, userId: userId, sentAt: sentAt));
+    // Both transports run in parallel, each isolated so an offline
+    // Supabase can't sink the mesh delivery and vice versa.
+    final supabaseFuture = () async {
+      try {
+        await _client.from('messages').insert({
+          'party_id': partyId,
+          'sender_id': userId,
+          'encrypted_payload': wire,
+        });
+      } catch (_) {/* offline — mesh is the fallback */}
+    }();
+    final meshFuture = () async {
+      try {
+        await _bridge.broadcast(
           partyId: partyId,
           type: MeshMsgType.chat,
           ciphertext: payload.toBytes(),
-        )
-        .then<void>((_) {})
-        .catchError((Object _) {});
-    await Future.wait<void>([supabaseFuture.then<void>((_) {}), meshFuture]);
+        );
+      } catch (_) {/* radio busy / not paired — silent */}
+    }();
+    await Future.wait([supabaseFuture, meshFuture]);
   }
 
   Stream<List<ChatMessage>> watch(String partyId) {
@@ -72,6 +90,7 @@ class ChatService {
     SecretKey? key;
     RealtimeChannel? channel;
     StreamSubscription<InboundMeshEvent>? meshSub;
+    StreamSubscription<_LocalChatEcho>? echoSub;
 
     void emit() {
       if (controller.isClosed) return;
@@ -92,13 +111,17 @@ class ChatService {
         final uuid = data['uuid'] as String? ?? fallbackId;
         if (uuid == null) return; // no dedupe key — skip
         if (messages.containsKey(uuid)) return; // already have it
+        // Trust the row's sender_id when present (Supabase path); fall
+        // back to the user_id baked into the encrypted payload for
+        // mesh-only messages where the row column doesn't exist.
+        final sender = senderId ?? data['user_id'] as String?;
         messages[uuid] = ChatMessage(
           id: uuid,
-          senderId: senderId ?? '',
-          callsign: meta[senderId ?? ''] ?? '??',
+          senderId: sender ?? '',
+          callsign: meta[sender ?? ''] ?? '??',
           text: data['text'] as String? ?? '',
           sentAt: sentAt,
-          mine: senderId == selfId,
+          mine: sender == selfId,
         );
         emit();
       } catch (_) {
@@ -177,16 +200,47 @@ class ChatService {
       // Mesh inbound — parallel to Supabase Realtime. Decoupled lifetime:
       // both can fail independently and the other keeps working.
       meshSub = _bridge.inbound.listen(ingestMeshEvent);
+      // Local-echo subscription — own messages from send() land here
+      // before any network round-trip completes.
+      echoSub = _localEchoes.stream.listen((ev) {
+        if (messages.containsKey(ev.uuid)) return;
+        messages[ev.uuid] = ChatMessage(
+          id: ev.uuid,
+          senderId: ev.userId,
+          callsign: meta[ev.userId] ?? '??',
+          text: ev.text,
+          sentAt: ev.sentAt,
+          mine: ev.userId == selfId,
+        );
+        emit();
+      });
       emit();
     }
 
     controller.onListen = init;
     controller.onCancel = () async {
       await meshSub?.cancel();
+      await echoSub?.cancel();
       final ch = channel;
       if (ch != null) await _client.removeChannel(ch);
       if (!controller.isClosed) await controller.close();
     };
     return controller.stream;
   }
+}
+
+/// One own-message event piped from [ChatService.send] to every active
+/// [ChatService.watch] subscriber so the sender's UI updates instantly
+/// regardless of whether Supabase or the mesh ever ack the broadcast.
+class _LocalChatEcho {
+  const _LocalChatEcho({
+    required this.uuid,
+    required this.text,
+    required this.userId,
+    required this.sentAt,
+  });
+  final String uuid;
+  final String text;
+  final String userId;
+  final DateTime sentAt;
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -23,12 +24,24 @@ import 'mesh/mesh_envelope.dart';
 /// payload by [LocationPublisher] is what lets a mesh-only fix know which
 /// member it belongs to (mesh frames don't carry Supabase user ids).
 class PartyLiveService {
-  PartyLiveService(this._client, this._crypto, this._session, this._bridge);
+  PartyLiveService(
+    this._client,
+    this._crypto,
+    this._session,
+    this._bridge,
+    this._selfPositionStream,
+  );
 
   final SupabaseClient _client;
   final CryptoService _crypto;
   final CryptoSession _session;
   final MeshBridge _bridge;
+
+  /// Local GPS stream — lets us update our own dot the instant a fix lands,
+  /// without waiting for the Supabase upsert to round-trip back via
+  /// Realtime. That round-trip never completes when the user is offline,
+  /// so without this the self-dot would freeze the moment cell drops.
+  final Stream<Position> _selfPositionStream;
 
   Stream<List<MemberPosition>> watch(String partyId) {
     final controller = StreamController<List<MemberPosition>>();
@@ -40,6 +53,7 @@ class PartyLiveService {
     RealtimeChannel? channel;
     Timer? staleTicker;
     StreamSubscription<InboundMeshEvent>? meshSub;
+    StreamSubscription<Position>? selfSub;
 
     void emit() {
       if (controller.isClosed) return;
@@ -222,6 +236,31 @@ class PartyLiveService {
       // Mesh inbound — runs in parallel with Supabase Realtime.
       meshSub = _bridge.inbound.listen(ingestMeshEvent);
 
+      // Local GPS — instantly updates the self-dot without needing the
+      // Supabase upsert round-trip. Critical for airplane mode where the
+      // round-trip never completes; without this the user's own dot would
+      // freeze at the moment cell dropped.
+      if (selfId != null) {
+        selfSub = _selfPositionStream.listen((pos) {
+          final m = meta[selfId];
+          final mp = MemberPosition(
+            userId: selfId,
+            callsign: m?.callsign ?? '??',
+            color: m?.color ?? '#C19A6B',
+            location: LatLng(pos.latitude, pos.longitude),
+            speed: pos.speed,
+            heading: pos.heading,
+            accuracy: pos.accuracy,
+            altitude: pos.altitude,
+            updatedAt: DateTime.now().toUtc(),
+            isSelf: true,
+          );
+          // Always overwrite — local GPS is the freshest source for self.
+          positions[selfId] = mp;
+          emit();
+        });
+      }
+
       // Re-emit periodically so "last seen" / stale styling stays current.
       staleTicker = Timer.periodic(const Duration(seconds: 20), (_) => emit());
       emit();
@@ -231,6 +270,7 @@ class PartyLiveService {
     controller.onCancel = () async {
       staleTicker?.cancel();
       await meshSub?.cancel();
+      await selfSub?.cancel();
       final ch = channel;
       if (ch != null) await _client.removeChannel(ch);
       if (!controller.isClosed) await controller.close();

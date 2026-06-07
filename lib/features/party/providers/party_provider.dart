@@ -75,6 +75,7 @@ PartyLiveService partyLiveService(Ref ref) => PartyLiveService(
       ref.watch(cryptoServiceProvider),
       ref.watch(cryptoSessionProvider),
       ref.watch(meshBridgeProvider),
+      ref.watch(selfPositionProvider.stream),
     );
 
 /// Live decrypted member positions for a party (realtime).
