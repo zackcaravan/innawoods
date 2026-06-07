@@ -73,12 +73,14 @@ dependencies:
   mgrs_dart: ^2.0.0           # MGRS / UTM coordinate conversion
   image: ^4.3.0               # PNG decode for DEM sampling (terrarium tiles)
   image_picker: ^1.1.2        # camera + gallery for pin photos
+  flutter_blue_plus: ^1.32.12  # BLE radio for Meshtastic-firmware devices
+  protobuf: ^6.0.0             # decode FromRadio packets off the BLE GATT char
+                               # (matches protoc_plugin 25.x codegen surface)
+  crypto: ^3.0.5               # SHA-256 for mesh envelope party-id hash
 
   # NOTE: deferred to their build phases to keep the build green —
   #   flutter_map + latlong2 + offline tile caching   (Phase 3)
   #   firebase_core + firebase_messaging + flutter_local_notifications (Phase 10)
-  #   permission_handler                              (Phases 3/9/10)
-  #   Meshtastic BLE                                  (Phase 9)
 
 dev_dependencies:
   flutter_test:

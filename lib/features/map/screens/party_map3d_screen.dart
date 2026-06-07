@@ -39,8 +39,10 @@ import '../../auth/providers/auth_provider.dart';
 import '../../maps/providers/maps_provider.dart';
 import '../../party/providers/party_provider.dart';
 import '../../settings/providers/settings_provider.dart';
+import '../../mesh/providers/mesh_provider.dart';
 import '../../tracks/providers/tracks_provider.dart';
 import '../../../core/errors/user_error.dart';
+import '../../../shared/services/mesh/mesh_radio.dart';
 
 /// The party map — MapLibre 3D vector engine + the full encrypted party layer
 /// and all interactions. This replaces the old flutter_map party screen.
@@ -1614,12 +1616,8 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
               ),
             ),
           // Slim status chips just under the top bar — offline + placement hint
-          // + trip mode badge.
-          if (_offline ||
-              _placingPin ||
-              _placingWaypointForRouteId != null ||
-              _currentSettings?.tripMode == true)
-            Positioned(
+          // + trip mode badge + mesh status.
+          Positioned(
               top: 0,
               left: 0,
               right: 0,
@@ -1628,6 +1626,41 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                   padding: const EdgeInsets.only(top: 56), // clear the TopBar
                   child: Column(
                     children: [
+                      // Mesh status — visible whenever a radio is paired so the
+                      // user can see at a glance that the LoRa transport is up.
+                      Consumer(builder: (_, wref, _) {
+                        final state = wref
+                                .watch(meshConnectionStateProvider)
+                                .valueOrNull ??
+                            MeshConnectionState.disconnected;
+                        final radio =
+                            wref.watch(connectedRadioProvider).valueOrNull;
+                        if (state == MeshConnectionState.disconnected ||
+                            radio == null) {
+                          return const SizedBox.shrink();
+                        }
+                        final (icon, color, label) = switch (state) {
+                          MeshConnectionState.ready => (
+                              Icons.signal_cellular_alt,
+                              Colors.lightGreenAccent,
+                              'Mesh · ${radio.nodeCount} nodes'
+                            ),
+                          MeshConnectionState.syncing => (
+                              Icons.sync,
+                              Colors.amberAccent,
+                              'Mesh syncing'
+                            ),
+                          MeshConnectionState.connecting => (
+                              Icons.bluetooth_connected,
+                              Colors.amberAccent,
+                              'Mesh connecting'
+                            ),
+                          _ => (Icons.bluetooth_searching,
+                              Colors.lightBlueAccent, 'Mesh scanning'),
+                        };
+                        return _StatusChip(
+                            icon: icon, label: label, color: color);
+                      }),
                       if (_offline) _StatusChip(
                         icon: Icons.cloud_off,
                         label: 'Offline mode',

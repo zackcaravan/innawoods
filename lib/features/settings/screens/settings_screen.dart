@@ -70,6 +70,19 @@ class _Body extends ConsumerWidget {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.push('/tracks'),
         ),
+        const Divider(height: 24),
+        Text('Radio', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.radio_outlined),
+          title: const Text('LoRa radio'),
+          subtitle: const Text(
+              'Pair a Meshtastic-firmware device for off-grid mesh chat '
+              'and position sharing.'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.push('/settings/lora'),
+        ),
         const SizedBox(height: 12),
         ListTile(
           contentPadding: EdgeInsets.zero,

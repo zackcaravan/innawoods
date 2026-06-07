@@ -9,6 +9,22 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Camera for pin photos (image_picker) -->
     <uses-permission android:name="android.permission.CAMERA"/>
+
+    <!-- BLE — Meshtastic radio integration. On Android 12+ (API 31) BLUETOOTH_*
+         replace the legacy ACCESS_BLUETOOTH; we declare both so the app works
+         from Android 6 onward. usesPermissionFlags="neverForLocation" tells
+         Android we will not infer user location from BT scan results, which
+         lets us scan without ACCESS_FINE_LOCATION on 12+ (we already have it
+         for GPS anyway). -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-feature android:name="android.hardware.bluetooth_le"
+        android:required="false"/>
     <application
         android:label="innawoods"
         android:name="${applicationName}"

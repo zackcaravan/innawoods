@@ -2,6 +2,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../features/map/screens/party_map3d_screen.dart';
 import '../../features/maps/screens/maps_screen.dart';
+import '../../features/mesh/screens/mesh_settings_screen.dart';
+import '../../features/mesh/screens/mesh_setup_wizard.dart';
 import '../../features/onboarding/screens/onboarding_screen.dart';
 import '../../features/tracks/screens/tracks_screen.dart';
 import '../../features/party/screens/chat_screen.dart';
@@ -26,6 +28,14 @@ GoRouter buildRouter({String initialLocation = '/'}) => GoRouter(
         GoRoute(
           path: '/settings',
           builder: (context, state) => const SettingsScreen(),
+        ),
+        GoRoute(
+          path: '/settings/lora',
+          builder: (context, state) => const MeshSettingsScreen(),
+        ),
+        GoRoute(
+          path: '/settings/lora/setup',
+          builder: (context, state) => const MeshSetupWizard(),
         ),
         GoRoute(
           path: '/maps',
