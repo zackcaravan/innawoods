@@ -98,6 +98,19 @@ workflows:
         APP_STORE_APPLE_ID: 6777637554
     # Manual trigger only — see notes on the Android workflow above.
     scripts:
+      - name: Disable Swift Package Manager
+        # Flutter started auto-adding SPM integration during `build ipa`,
+        # which rewrites the Xcode project AFTER xcode-project use-profiles
+        # has set up signing — clobbering the manual signing config and
+        # leaving xcodebuild looking for a Development cert.
+        #
+        # Five of our plugins (permission_handler_apple, mobile_scanner,
+        # flutter_secure_storage, flutter_local_notifications,
+        # flutter_inappwebview_ios) don't support SPM yet, and CocoaPods
+        # handles all of them fine. Opt out of SPM globally on the runner
+        # before any signing or build steps touch the project. Same fix
+        # the Switchboard workflow ships.
+        script: flutter config --no-enable-swift-package-manager
       - name: Fetch / create iOS signing files
         # Mirrors the working Switchboard pattern. The named ASC integration
         # injects APP_STORE_CONNECT_PRIVATE_KEY (raw .p8 contents),
@@ -131,7 +144,9 @@ workflows:
       - name: Get dependencies
         script: flutter pub get
       - name: Pod install
-        script: cd ios && pod install
+        # find-based traversal matches Switchboard's pattern; tolerates
+        # nested Podfiles if any plugin grows them in a future update.
+        script: find . -name "Podfile" -execdir pod install \;
       - name: Generate Riverpod providers
         script: dart run build_runner build --delete-conflicting-outputs
       - name: Bump build number to match TestFlight
