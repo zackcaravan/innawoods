@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy · Innawoods</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="container">
+      <a class="brand" href="/"><span class="dot"></span>innawoods</a>
+      <nav>
+        <a href="/">Home</a>
+        <a href="support.html">Support</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h1>Privacy Policy</h1>
+    <p class="lead">Last updated: June 2026</p>
+
+    <p>This Privacy Policy describes how Caravan Electric, LLC ("Innawoods", "we", "us") handles information when you use the Innawoods mobile app and related services. Innawoods is built so we (and our servers) hold the absolute minimum data needed to make a privacy-first off-grid crew app work — everything you create that touches another crew member is end-to-end encrypted on your device before it leaves.</p>
+
+    <div class="callout">
+      <strong>The short version:</strong> No name, email, phone, or password. Your party's chat, positions, pins, and routes are encrypted client-side with a key only your crew has. Our server only ever sees ciphertext + opaque IDs. We don't sell, share, or analyze your data — we don't have it.
+    </div>
+
+    <h2>1. What we collect</h2>
+
+    <h3>1.1 What you give us (directly)</h3>
+    <ul class="clean">
+      <li><strong>Callsign and color</strong> you pick when joining a party. Stored on our server in plaintext because it's how your crew identifies you on the map.</li>
+      <li><strong>Encrypted party content</strong> — locations, chat messages, pins, routes, route waypoints. Encrypted on your device with your party's group key (which our server never has) before being uploaded. To us these are opaque ciphertext blobs.</li>
+    </ul>
+
+    <h3>1.2 What's generated automatically</h3>
+    <ul class="clean">
+      <li><strong>An anonymous user identifier</strong> (a random UUID) created by our authentication provider on your first launch. Not tied to email, phone, name, advertising id, or device fingerprint.</li>
+      <li><strong>Your X25519 public identity key</strong>, generated on-device. Published so other party members can derive shared keys with you. The matching private key never leaves your device.</li>
+    </ul>
+
+    <h3>1.3 What stays on your device only</h3>
+    <ul class="clean">
+      <li>Photos you attach to pins (device-private file storage)</li>
+      <li>Track recordings (your own private breadcrumb trail)</li>
+      <li>Downloaded offline map tiles</li>
+      <li>Your private identity key</li>
+      <li>App settings (battery interval, coordinate format, etc.)</li>
+      <li>Cached terrain elevation tiles</li>
+    </ul>
+
+    <h3>1.4 What we don't collect</h3>
+    <ul class="clean">
+      <li>Name, email address, phone number, date of birth, mailing address</li>
+      <li>Plaintext locations, plaintext chat, plaintext pins, plaintext routes</li>
+      <li>Photos you take in the app</li>
+      <li>Contacts, calendars, files outside the app's own sandbox</li>
+      <li>Advertising identifiers (IDFA, AAID)</li>
+      <li>Third-party analytics — there is no analytics SDK</li>
+      <li>Crash reporting SDKs — there is no crash reporter currently shipped</li>
+    </ul>
+
+    <h2>2. How encryption works</h2>
+
+    <p>The cryptography matters because it's the foundation of every other privacy claim on this page.</p>
+
+    <ul class="clean">
+      <li><strong>Identity:</strong> Each device generates a Curve25519 (X25519) keypair on first launch. The private key never leaves the device.</li>
+      <li><strong>Party group key:</strong> When you create a party, a 256-bit random secret is generated. That secret is shared via an invite link's URL fragment — and URL fragments are by web standard never sent to the server. So invite recipients learn the secret directly, and our server never sees it.</li>
+      <li><strong>Symmetric encryption:</strong> Party messages and positions are encrypted with XChaCha20-Poly1305 (authenticated encryption with a 24-byte nonce and 16-byte MAC) using a key derived from the party group secret + party id via HKDF-SHA-256.</li>
+      <li><strong>What our server sees:</strong> A party id, your anonymous user id, and an opaque base64 blob. Without the party secret (which we don't have and can't request), nothing about the contents is recoverable.</li>
+    </ul>
+
+    <h2>3. How we use what we have</h2>
+
+    <ul class="clean">
+      <li>Relay encrypted messages, positions, pins, routes, and waypoints between members of the same party</li>
+      <li>Maintain your party membership and callsign</li>
+      <li>Send local notifications (e.g. "dead-man's switch: HAPPY hasn't pinged in 15 minutes") triggered by your device — these never leave your device</li>
+    </ul>
+
+    <p>We don't use your data for advertising, profiling, model training, ranking, recommendations, or any analytics, period.</p>
+
+    <h2>4. Bluetooth and LoRa radio</h2>
+
+    <p>Innawoods optionally pairs over Bluetooth Low Energy (BLE) with Meshtastic-firmware LoRa radios (e.g. LilyGO, Heltec, RAK) for off-grid mesh communication. We only use Bluetooth to talk to the radio you explicitly pair, and only request the Bluetooth permissions necessary to scan + connect. The "neverForLocation" permission flag is set on the scan permission — we do not infer or collect location from Bluetooth scan results.</p>
+
+    <p>When sending over LoRa, your party's E2E ciphertext rides intact on top of Meshtastic's own radio-layer encryption (AES-256 with the channel pre-shared key). Effectively double-encrypted. Listeners on the same Meshtastic channel without your party secret see ciphertext only.</p>
+
+    <h2>5. Location data</h2>
+
+    <p>Innawoods is a mapping app. With your permission, we read your device's location to:</p>
+    <ul class="clean">
+      <li>Show your dot on the map</li>
+      <li>Publish your position to your party (encrypted before upload)</li>
+      <li>Record an optional on-device track (never uploaded)</li>
+    </ul>
+
+    <p>Location updates are published on a configurable interval — the default is 30 seconds. You can change this in Settings to be as infrequent as 5 minutes for battery, or as frequent as 30 seconds. The default behavior is foreground-only; if you grant background location, the same publishing cadence applies while the app is backgrounded so your crew still sees you.</p>
+
+    <h2>6. Third-party services</h2>
+
+    <p>The app uses a small number of third-party services that see only what's strictly necessary for them to function:</p>
+
+    <ul class="clean">
+      <li><strong>Supabase</strong> — relays the encrypted blobs and brokers anonymous user accounts. Sees ciphertext + your anonymous UUID + your callsign + party id.</li>
+      <li><strong>AWS S3 (Terrarium open elevation tiles)</strong> — only when you sample elevation for an offline-cached terrain region. The request includes a tile coordinate. No personal identifier is attached.</li>
+      <li><strong>Esri / USGS / OpenTopoMap basemap servers</strong> — only when you switch to a satellite or topo overlay that needs them. Standard tile-fetch requests.</li>
+      <li><strong>GitHub Releases</strong> — hosts the offline map files you download. Standard HTTPS file download.</li>
+    </ul>
+
+    <p>We don't share any data with these providers beyond what's necessary for the request, and we never push your data to them for analytics, advertising, or any secondary purpose.</p>
+
+    <h2>7. Data retention and deletion</h2>
+
+    <ul class="clean">
+      <li><strong>Leave a party:</strong> Removes your row from the party. Your local copy of the party secret is also deleted, so you can no longer read the party's history even if your row is somehow restored.</li>
+      <li><strong>End a party (host only):</strong> Server-side purge of every encrypted blob attached to that party — locations, chat, pins, routes, waypoints, member rows.</li>
+      <li><strong>Uninstall:</strong> Wipes every device-local artifact — secrets, cached tiles, recorded tracks, pin photos. The anonymous user account on the server persists; without the device's identity private key it's an inert UUID with nothing readable attached.</li>
+      <li><strong>Account deletion request:</strong> Email us at the address below from any address and we'll purge the anonymous user row + every party where you're the only remaining member, within 30 days.</li>
+    </ul>
+
+    <h2>8. Children</h2>
+
+    <p>Innawoods is not directed at children under 13. We don't knowingly collect data from anyone in that age range, and because we collect no name, age, or identifying info, we have no way to do so unintentionally beyond an anonymous UUID.</p>
+
+    <h2>9. Changes to this policy</h2>
+
+    <p>If we change anything material about how we handle data, the change will be posted here with an updated "Last updated" date at the top. If the change is significant enough to alter what you previously agreed to, we'll notify active users in-app on next launch.</p>
+
+    <h2>10. Contact</h2>
+    <p>Caravan Electric, LLC<br>
+    Whidbey Island, WA<br>
+    <a href="mailto:zack.caravan@gmail.com">zack.caravan@gmail.com</a></p>
+  </main>
+
+  <footer>
+    <div class="container">
+      <nav>
+        <a href="privacy.html">Privacy</a>
+        <a href="support.html">Support</a>
+      </nav>
+      <p>© 2026 Caravan Electric, LLC.</p>
+    </div>
+  </footer>
+</body>
+</html>
