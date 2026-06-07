@@ -40,6 +40,7 @@ import '../../maps/providers/maps_provider.dart';
 import '../../party/providers/party_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../../mesh/providers/mesh_provider.dart';
+import '../../party/widgets/invite_qr_dialog.dart';
 import '../../tracks/providers/tracks_provider.dart';
 import '../../../core/errors/user_error.dart';
 import '../../../shared/services/mesh/mesh_radio.dart';
@@ -1903,7 +1904,7 @@ class _RosterSheet extends ConsumerWidget {
                     style: Theme.of(context).textTheme.titleMedium, overflow: TextOverflow.ellipsis),
               ),
               const Spacer(),
-              IconButton(icon: const Icon(Icons.ios_share), onPressed: () => _share(ref)),
+              IconButton(icon: const Icon(Icons.ios_share), onPressed: () => _share(context, ref)),
             ]),
             for (final m in members) _MemberRow(m: m),
             const SizedBox(height: 12),
@@ -1945,11 +1946,46 @@ class _RosterSheet extends ConsumerWidget {
     );
   }
 
-  Future<void> _share(WidgetRef ref) async {
+  Future<void> _share(BuildContext context, WidgetRef ref) async {
     final pty = party;
     if (pty == null) return;
     final link = await ref.read(partyServiceProvider).shareLinkFor(pty);
-    if (link != null) await Share.share('Join my innawoods party:\n$link', subject: 'innawoods invite');
+    if (link == null || !context.mounted) return;
+    // Offer QR first — it's the only zero-typo option when both devices are
+    // out of cell signal. Fall back to the OS share sheet (SMS, copy, etc.)
+    // for the case where the recipient is somewhere else entirely.
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.qr_code_2),
+              title: const Text('Show QR'),
+              subtitle: const Text(
+                  'They scan with their innawoods → Join screen.'),
+              onTap: () => Navigator.of(context).pop('qr'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.ios_share),
+              title: const Text('Send link'),
+              subtitle: const Text(
+                  'OS share sheet — SMS, Signal, copy, etc.'),
+              onTap: () => Navigator.of(context).pop('link'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted) return;
+    if (picked == 'qr') {
+      await InviteQrDialog.show(context, link);
+    } else if (picked == 'link') {
+      await Share.share('Join my innawoods party:\n$link',
+          subject: 'innawoods invite');
+    }
   }
 
   Future<void> _exportPins(WidgetRef ref, List<MapPin> pins) async {

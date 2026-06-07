@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/color_picker_row.dart';
 import '../providers/party_provider.dart';
+import 'scan_invite_qr_screen.dart';
 
 class JoinPartyScreen extends ConsumerStatefulWidget {
   const JoinPartyScreen({super.key, this.initialLink});
@@ -71,6 +72,34 @@ class _JoinPartyScreenState extends ConsumerState<JoinPartyScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () async {
+                      // Push the camera scanner; it pops back with the
+                      // decoded invite link or null if the user canceled.
+                      final result = await Navigator.of(context).push<String>(
+                        MaterialPageRoute(
+                          builder: (_) => const ScanInviteQrScreen(),
+                          fullscreenDialog: true,
+                        ),
+                      );
+                      if (result != null && mounted) {
+                        setState(() {
+                          _link.text = result;
+                          _error = null;
+                        });
+                      }
+                    },
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scan QR from the other phone'),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Or paste the invite link below:',
+              style: TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
             TextField(
               controller: _link,
               minLines: 1,

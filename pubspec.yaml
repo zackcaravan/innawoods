@@ -77,6 +77,8 @@ dependencies:
   protobuf: ^6.0.0             # decode FromRadio packets off the BLE GATT char
                                # (matches protoc_plugin 25.x codegen surface)
   crypto: ^3.0.5               # SHA-256 for mesh envelope party-id hash
+  qr_flutter: ^4.1.0           # render party-invite QR for offline pairing
+  mobile_scanner: ^5.2.3       # scan the QR back in to join — zero typos
 
   # NOTE: deferred to their build phases to keep the build green —
   #   flutter_map + latlong2 + offline tile caching   (Phase 3)

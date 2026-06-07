@@ -410,11 +410,11 @@ class MeshRadioService {
   }
 
   /// Ask the radio to dump its config + kick off a brief priming read so
-  /// the first packet lands fast. After that we trust FromNum notifications
-  /// to surface the rest of the dump via [_drainFromRadio]. The old version
-  /// poll-drained in a 200-iteration loop here, which added ~10s of
-  /// foreground latency on radios with a populated node DB even after MTU
-  /// was negotiated.
+  /// the first packet lands fast. The full dump (Metadata, NodeInfo list,
+  /// LoRaConfig, ConfigComplete) continues to drain in the background
+  /// without blocking the wizard. State flips to ready on the first MyInfo
+  /// inside [_absorbForUi] so the UI is snappy, while the data rows fill
+  /// in over the next few seconds.
   Future<void> _requestConfig() async {
     final c = _toRadio;
     if (c == null) return;
@@ -422,15 +422,40 @@ class MeshRadioService {
       ..wantConfigId = DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF;
     await c.write(req.writeToBuffer(), withoutResponse: false);
     _log('sent wantConfigId=${req.wantConfigId}');
-    // Priming reads — fire 3 quick back-to-back reads to grab whatever's
-    // already queued (MyInfo + Metadata typically). After that, the FromNum
-    // notification subscription takes over for the rest of the dump.
+    // Priming reads — pull MyInfo + Metadata quickly so the wizard sees
+    // ready within ~1s. After that we hand off to a background loop.
     for (var i = 0; i < 3; i++) {
       if (_state == MeshConnectionState.ready) break;
       final bytes = await _fromRadio?.read();
       if (bytes == null || bytes.isEmpty) break;
       _handleBytes(bytes);
     }
+    // Background drain — runs unawaited so it doesn't block the wizard's
+    // success transition. Keeps pulling packets until the queue is empty
+    // for several iterations or we hit the hard cap. FromNum notifications
+    // also trigger _drainFromRadio in parallel; both paths converge on
+    // _handleBytes which is idempotent against duplicate FromRadio data.
+    unawaited(_backgroundConfigDrain());
+  }
+
+  Future<void> _backgroundConfigDrain() async {
+    var consecutiveEmpties = 0;
+    for (var i = 0; i < 300; i++) {
+      final c = _fromRadio;
+      if (c == null) return;
+      final bytes = await c.read();
+      if (bytes.isEmpty) {
+        consecutiveEmpties++;
+        if (consecutiveEmpties >= 4) return;
+        // Brief pause when empty — gives the radio a moment to queue
+        // more without us hammering BLE with empty reads.
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        continue;
+      }
+      consecutiveEmpties = 0;
+      _handleBytes(bytes);
+    }
+    _log('background drain hit hard cap of 300 reads');
   }
 
   /// Write a raw ToRadio protobuf to the radio. Phase 8b will wrap this
