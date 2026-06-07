@@ -29,19 +29,11 @@ class _MeshSetupWizardState extends ConsumerState<MeshSetupWizard> {
   bool _scanning = false;
   String? _error;
 
-  @override
-  void initState() {
-    super.initState();
-    // Listen for the radio entering 'ready' so we can auto-advance to the
-    // success step once the config dump finishes.
-    ref.listenManual(meshConnectionStateProvider, (_, next) {
-      final s = next.valueOrNull;
-      if (!mounted) return;
-      if (s == MeshConnectionState.ready && _step != 2) {
-        setState(() => _step = 2);
-      }
-    }, fireImmediately: true);
-  }
+  // No initState listener — we subscribe inside build() instead. Earlier
+  // versions used ref.listenManual from initState but stream-provider
+  // events that fired during the awaited connect() call were being missed
+  // because the subscription didn't fully attach until after connect()
+  // returned, leaving the wizard pinned to step 1 forever.
 
   @override
   void dispose() {
@@ -108,6 +100,27 @@ class _MeshSetupWizardState extends ConsumerState<MeshSetupWizard> {
 
   @override
   Widget build(BuildContext context) {
+    // Auto-advance the wizard the moment the radio reaches ready. We also
+    // bump out of step 1 into step 2 when the state passes through
+    // syncing/ready so the user sees the success card even on fast
+    // connects where the state churn happens during the await.
+    ref.listen(meshConnectionStateProvider, (_, next) {
+      final s = next.valueOrNull;
+      if (!mounted || s == null) return;
+      if (s == MeshConnectionState.ready && _step != 2) {
+        setState(() => _step = 2);
+      }
+    });
+    // Also catch the case where the user opened the wizard with an
+    // already-paired radio — read the current state synchronously and
+    // jump to the success step right away.
+    final initialState =
+        ref.read(meshRadioServiceProvider).currentState;
+    if (initialState == MeshConnectionState.ready && _step != 2) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _step != 2) setState(() => _step = 2);
+      });
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Pair LoRa radio'),

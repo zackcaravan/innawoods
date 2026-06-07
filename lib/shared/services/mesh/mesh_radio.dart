@@ -131,6 +131,11 @@ class MeshRadioService {
   StreamSubscription<List<int>>? _fromNumSub;
   StreamSubscription<BluetoothConnectionState>? _connSub;
 
+  /// Distinct node nums we've seen in NodeInfo packets — counts every peer
+  /// the radio knows about (plus the radio itself). Surfaced as the
+  /// 'Mesh nodes' row + the on-map status chip.
+  final Set<int> _knownNodes = {};
+
   ConnectedRadio? get currentRadio => _radio;
   MeshConnectionState get currentState => _state;
 
@@ -247,6 +252,17 @@ class MeshRadioService {
         _setState(MeshConnectionState.disconnected);
       }
     });
+    // Negotiate a larger ATT MTU. The default 23-byte MTU gives only 20
+    // bytes per characteristic read — most Meshtastic FromRadio packets are
+    // larger than that, so protobuf decode would silently fail and the UI
+    // would stay stuck on 'Syncing config'. The radio's firmware will cap
+    // us at whatever its own ceiling is (typically 247 or 512).
+    try {
+      final mtu = await device.requestMtu(512);
+      _log('negotiated MTU = $mtu');
+    } catch (e) {
+      _log('requestMtu failed (ignoring): $e');
+    }
     // Discover GATT services + locate our three characteristics. Some
     // platforms hand us cached service lists missing characteristics on
     // first connect — discoverServices forces a fresh DB read.
@@ -310,6 +326,7 @@ class MeshRadioService {
     _fromRadio = null;
     _toRadio = null;
     _fromNum = null;
+    _knownNodes.clear();
     _setRadio(null);
     _setState(MeshConnectionState.disconnected);
   }
@@ -347,15 +364,25 @@ class MeshRadioService {
       _setRadio(cur.copyWith(myNodeNum: fr.myInfo.myNodeNum));
     } else if (fr.hasNodeInfo()) {
       final ni = fr.nodeInfo;
-      // The radio's own node is identified by num == myNodeNum.
+      _knownNodes.add(ni.num);
+      // The radio's own node is identified by num == myNodeNum — pull
+      // battery + voltage off its device-metrics for the Settings card.
+      var next = cur.copyWith(nodeCount: _knownNodes.length);
       if (cur.myNodeNum != null && ni.num == cur.myNodeNum) {
-        _setRadio(cur.copyWith(
+        next = next.copyWith(
           batteryLevel:
               ni.hasDeviceMetrics() ? ni.deviceMetrics.batteryLevel : null,
           voltage:
               ni.hasDeviceMetrics() ? ni.deviceMetrics.voltage : null,
-        ));
+        );
       }
+      // If this NodeInfo also carries a user record with a long name,
+      // surface the hw model heuristic as a fallback when Metadata wasn't
+      // sent (older firmware path).
+      if (cur.hwModel == null && ni.hasUser() && ni.user.hwModel.value != 0) {
+        next = next.copyWith(hwModel: ni.user.hwModel.name);
+      }
+      _setRadio(next);
     } else if (fr.hasConfigCompleteId()) {
       _setState(MeshConnectionState.ready);
     } else if (fr.hasMetadata()) {
@@ -364,12 +391,21 @@ class MeshRadioService {
         firmwareVersion: m.firmwareVersion,
         hwModel: m.hwModel.name,
       ));
+    } else if (fr.hasConfig()) {
+      // Region lives inside LoRaConfig — only present when the firmware
+      // pushes a LoRa config block in the dump.
+      final cfg = fr.config;
+      if (cfg.hasLora()) {
+        _setRadio(cur.copyWith(region: cfg.lora.region.name));
+      }
     }
   }
 
-  /// Ask the radio to dump its config. Generates a random session id; the
-  /// matching ConfigComplete in the FromRadio stream tells us when the
-  /// dump is finished and we can flip to "ready".
+  /// Ask the radio to dump its config + drain the FromRadio queue without
+  /// waiting on FromNum notifications. The Meshtastic-Android reference
+  /// client polls FromRadio in a tight loop after wantConfigId because
+  /// some firmware revisions don't reliably notify on FromNum until after
+  /// the queue is empty, which is the bug we'd hit otherwise.
   Future<void> _requestConfig() async {
     final c = _toRadio;
     if (c == null) return;
@@ -377,6 +413,23 @@ class MeshRadioService {
       ..wantConfigId = DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF;
     await c.write(req.writeToBuffer(), withoutResponse: false);
     _log('sent wantConfigId=${req.wantConfigId}');
+    // Poll-drain — keep reading until we hit a string of empties or land
+    // on ready. The radio queue can hold dozens of packets for a typical
+    // node DB; cap at 200 reads so a stuck radio can't lock us up.
+    var consecutiveEmpties = 0;
+    for (var i = 0; i < 200; i++) {
+      if (_state == MeshConnectionState.ready) break;
+      final bytes = await _fromRadio?.read();
+      if (bytes == null || bytes.isEmpty) {
+        consecutiveEmpties++;
+        if (consecutiveEmpties >= 3) break;
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        continue;
+      }
+      consecutiveEmpties = 0;
+      _handleBytes(bytes);
+    }
+    _log('config drain done (state=$_state)');
   }
 
   /// Write a raw ToRadio protobuf to the radio. Phase 8b will wrap this
