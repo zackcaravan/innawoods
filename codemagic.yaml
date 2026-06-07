@@ -59,10 +59,10 @@ workflows:
       - name: Generate Riverpod providers
         script: dart run build_runner build --delete-conflicting-outputs
       - name: Build AAB (signed)
-        script: |
-          flutter build appbundle --release \
-            --dart-define=SUPABASE_URL=$SUPABASE_URL \
-            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+        # Single-line invocation. Earlier multi-line backslash continuations
+        # caused Codemagic's shell to misparse later args as separate
+        # commands, so Flutter saw the SUPABASE_URL as a positional target.
+        script: flutter build appbundle --release --dart-define=SUPABASE_URL=$SUPABASE_URL --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
     artifacts:
       - build/app/outputs/bundle/release/*.aab
       - build/app/outputs/mapping/release/mapping.txt
@@ -116,11 +116,10 @@ workflows:
           LATEST_BUILD_NUMBER=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID")
           agvtool new-version -all $(($LATEST_BUILD_NUMBER + 1))
       - name: Build .ipa
-        script: |
-          flutter build ipa --release \
-            --dart-define=SUPABASE_URL=$SUPABASE_URL \
-            --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
-            --export-options-plist=/Users/builder/export_options.plist
+        # Single-line invocation — see note on Android build. Also dropped
+        # the --export-options-plist flag; xcode-project use-profiles in
+        # the signing step generates the plist on Codemagic's runner.
+        script: flutter build ipa --release --dart-define=SUPABASE_URL=$SUPABASE_URL --dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
