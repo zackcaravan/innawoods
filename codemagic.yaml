@@ -37,8 +37,9 @@
 
 workflows:
   android:
-    name: Android (Play Internal Testing)
-    instance_type: linux_x2
+    name: Android Play Store Release
+    # No explicit instance_type — Codemagic picks the default the current
+    # billing plan allows. Matches the Switchboard workflow pattern.
     max_build_duration: 60
     environment:
       flutter: stable
@@ -82,8 +83,9 @@ workflows:
           failure: true
 
   ios:
-    name: iOS (TestFlight)
-    instance_type: mac_mini_m2
+    name: iOS TestFlight Release
+    # No explicit instance_type — Codemagic picks the default the current
+    # billing plan allows. Matches the Switchboard workflow pattern.
     max_build_duration: 90
     integrations:
       app_store_connect: app-store-connect
