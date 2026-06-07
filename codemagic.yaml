@@ -112,51 +112,30 @@ workflows:
         # the Switchboard workflow ships.
         script: flutter config --no-enable-swift-package-manager
       - name: Fetch / create iOS signing files
-        # Verbose diagnostics: previous runs reported success from
-        # fetch-signing-files but the cert/profile never actually landed
-        # in the right keychain/dir so xcodebuild fell back to looking
-        # for a Development cert. We need to SEE each step's output.
+        # The 'app-store-connect' integration auto-injects three env vars
+        # that the CLI picks up natively — APP_STORE_CONNECT_KEY_IDENTIFIER,
+        # APP_STORE_CONNECT_ISSUER_ID, and APP_STORE_CONNECT_PRIVATE_KEY
+        # (where the third is set to a '@file:PATH' reference pointing at
+        # a pre-staged .p8 on the runner, NOT the raw PEM contents).
+        #
+        # Earlier attempts re-wrote the env var to /tmp/auth_key.p8, which
+        # ended up writing the literal string '@file:...' to disk and
+        # then failing CLI validation. The CLI handles all of this if we
+        # just leave the env vars alone.
+        #
+        # We generate a fresh RSA key pair for the certificate signing
+        # request — fetch-signing-files registers a new Distribution cert
+        # against it if the team doesn't have a usable one yet.
         script: |
           set -ex
-          echo "===== ASC env check ====="
-          if [ -z "$APP_STORE_CONNECT_PRIVATE_KEY" ]; then
-            echo "FATAL: APP_STORE_CONNECT_PRIVATE_KEY is unset — the ASC integration isn't injecting env vars."
-            echo "Confirm in Codemagic dashboard that the 'app-store-connect' integration is connected and the iOS workflow lists 'app_store_connect: app-store-connect' under integrations."
-            exit 1
-          fi
-          echo "PRIVATE_KEY len: $(echo -n "$APP_STORE_CONNECT_PRIVATE_KEY" | wc -c)"
-          echo "KEY_ID: ${APP_STORE_CONNECT_KEY_IDENTIFIER:-MISSING}"
-          echo "ISSUER_ID: ${APP_STORE_CONNECT_ISSUER_ID:-MISSING}"
-          echo "BUNDLE_ID: ${BUNDLE_ID:-MISSING}"
-          echo "===== writing auth key + generating cert key ====="
-          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/auth_key.p8
-          head -1 /tmp/auth_key.p8
           openssl genrsa -out /tmp/cert_key.pem 2048
-          ls -la /tmp/auth_key.p8 /tmp/cert_key.pem
-          echo "===== keychain initialize ====="
           keychain initialize
-          echo "===== fetch-signing-files ====="
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
-            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
-            --private-key @file:/tmp/auth_key.p8 \
             --certificate-key @file:/tmp/cert_key.pem \
-            --create \
-            --verbose
-          echo "===== installed profiles ====="
-          ls -la ~/Library/MobileDevice/Provisioning\ Profiles/ 2>/dev/null || echo "no profiles directory"
-          echo "===== certs in keychain BEFORE add-certificates ====="
-          security find-certificate -a | grep -E "labl|issu" | head -40 || true
-          echo "===== keychain add-certificates ====="
+            --create
           keychain add-certificates
-          echo "===== certs in keychain AFTER add-certificates ====="
-          security find-certificate -a | grep -E "labl|issu" | head -40 || true
-          security find-identity -p codesigning -v || true
-          echo "===== xcode-project use-profiles ====="
-          xcode-project use-profiles --verbose
-          echo "===== pbxproj signing settings AFTER ====="
-          grep -E "CODE_SIGN_STYLE|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE|DEVELOPMENT_TEAM" ios/Runner.xcodeproj/project.pbxproj | head -30
+          xcode-project use-profiles
       - name: Get dependencies
         script: flutter pub get
       - name: Pod install
