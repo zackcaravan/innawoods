@@ -99,19 +99,33 @@ workflows:
     # Manual trigger only — see notes on the Android workflow above.
     scripts:
       - name: Fetch / create iOS signing files
-        # The 'app-store-connect' integration referenced above auto-injects
-        # APP_STORE_CONNECT_PRIVATE_KEY, APP_STORE_CONNECT_KEY_IDENTIFIER,
-        # and APP_STORE_CONNECT_ISSUER_ID as env vars, so the CLI command
-        # picks them up without explicit flags.
+        # Mirrors the working Switchboard pattern. The named ASC integration
+        # injects APP_STORE_CONNECT_PRIVATE_KEY (raw .p8 contents),
+        # APP_STORE_CONNECT_KEY_IDENTIFIER, and APP_STORE_CONNECT_ISSUER_ID
+        # as env vars; we just write the .p8 to disk so we can reference it
+        # via the @file: prefix the CLI expects.
         #
-        # --create makes Codemagic generate (a) a fresh iOS Distribution
-        # certificate if the team doesn't have one available and (b) a
-        # provisioning profile for the bundle id if none exists yet.
-        # Without --certificate-key the CLI generates a new key pair and
-        # sends the CSR to Apple — no local PEM file needed.
+        # We generate a fresh RSA key pair right here for the certificate's
+        # signing request — having the key explicit (vs. letting the CLI
+        # generate one implicitly) is what made Switchboard's first build
+        # succeed where the implicit-generation path silently produced a
+        # cert that didn't end up usable by Flutter's build pipeline.
+        #
+        # --create tells the CLI to register a new Distribution certificate
+        # if the team doesn't already have one with the matching private key,
+        # and to create an App Store provisioning profile for the bundle id
+        # if one doesn't already exist.
         script: |
+          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/auth_key.p8
+          openssl genrsa -out /tmp/cert_key.pem 2048
           keychain initialize
-          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --private-key @file:/tmp/auth_key.p8 \
+            --certificate-key @file:/tmp/cert_key.pem \
+            --create
           keychain add-certificates
           xcode-project use-profiles
       - name: Get dependencies
