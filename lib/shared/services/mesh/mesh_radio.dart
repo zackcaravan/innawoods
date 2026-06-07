@@ -362,6 +362,14 @@ class MeshRadioService {
     if (cur == null) return;
     if (fr.hasMyInfo()) {
       _setRadio(cur.copyWith(myNodeNum: fr.myInfo.myNodeNum));
+      // First identity packet — BLE plumbing is proven, flip to ready
+      // immediately so the wizard advances. The remaining 50-150 NodeInfo
+      // packets will continue to land in the background and the Settings
+      // card will fill in over the next ~10s, but the user doesn't have
+      // to stare at "Syncing config from radio…" while it happens.
+      if (_state != MeshConnectionState.ready) {
+        _setState(MeshConnectionState.ready);
+      }
     } else if (fr.hasNodeInfo()) {
       final ni = fr.nodeInfo;
       _knownNodes.add(ni.num);
@@ -401,11 +409,12 @@ class MeshRadioService {
     }
   }
 
-  /// Ask the radio to dump its config + drain the FromRadio queue without
-  /// waiting on FromNum notifications. The Meshtastic-Android reference
-  /// client polls FromRadio in a tight loop after wantConfigId because
-  /// some firmware revisions don't reliably notify on FromNum until after
-  /// the queue is empty, which is the bug we'd hit otherwise.
+  /// Ask the radio to dump its config + kick off a brief priming read so
+  /// the first packet lands fast. After that we trust FromNum notifications
+  /// to surface the rest of the dump via [_drainFromRadio]. The old version
+  /// poll-drained in a 200-iteration loop here, which added ~10s of
+  /// foreground latency on radios with a populated node DB even after MTU
+  /// was negotiated.
   Future<void> _requestConfig() async {
     final c = _toRadio;
     if (c == null) return;
@@ -413,23 +422,15 @@ class MeshRadioService {
       ..wantConfigId = DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF;
     await c.write(req.writeToBuffer(), withoutResponse: false);
     _log('sent wantConfigId=${req.wantConfigId}');
-    // Poll-drain — keep reading until we hit a string of empties or land
-    // on ready. The radio queue can hold dozens of packets for a typical
-    // node DB; cap at 200 reads so a stuck radio can't lock us up.
-    var consecutiveEmpties = 0;
-    for (var i = 0; i < 200; i++) {
+    // Priming reads — fire 3 quick back-to-back reads to grab whatever's
+    // already queued (MyInfo + Metadata typically). After that, the FromNum
+    // notification subscription takes over for the rest of the dump.
+    for (var i = 0; i < 3; i++) {
       if (_state == MeshConnectionState.ready) break;
       final bytes = await _fromRadio?.read();
-      if (bytes == null || bytes.isEmpty) {
-        consecutiveEmpties++;
-        if (consecutiveEmpties >= 3) break;
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-        continue;
-      }
-      consecutiveEmpties = 0;
+      if (bytes == null || bytes.isEmpty) break;
       _handleBytes(bytes);
     }
-    _log('config drain done (state=$_state)');
   }
 
   /// Write a raw ToRadio protobuf to the radio. Phase 8b will wrap this
