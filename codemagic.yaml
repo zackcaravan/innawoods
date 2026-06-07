@@ -93,21 +93,27 @@ workflows:
       cocoapods: default
       groups:
         - supabase-prod
-      # Codemagic's "automatic code signing" mode. With the ASC integration
-      # named above, Codemagic will (1) call the App Store Connect API to
-      # find or create an iOS Distribution certificate for this team, (2)
-      # find or create the matching provisioning profile for the bundle id,
-      # (3) install both on the build keychain. Zero local cert files
-      # required — we never have to copy a CERTIFICATE_PRIVATE_KEY across
-      # apps and we never have to keep one safe locally.
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.innawoods.innawoods
       vars:
         BUNDLE_ID: com.innawoods.innawoods
         APP_STORE_APPLE_ID: 6777637554
     # Manual trigger only — see notes on the Android workflow above.
     scripts:
+      - name: Fetch / create iOS signing files
+        # The 'app-store-connect' integration referenced above auto-injects
+        # APP_STORE_CONNECT_PRIVATE_KEY, APP_STORE_CONNECT_KEY_IDENTIFIER,
+        # and APP_STORE_CONNECT_ISSUER_ID as env vars, so the CLI command
+        # picks them up without explicit flags.
+        #
+        # --create makes Codemagic generate (a) a fresh iOS Distribution
+        # certificate if the team doesn't have one available and (b) a
+        # provisioning profile for the bundle id if none exists yet.
+        # Without --certificate-key the CLI generates a new key pair and
+        # sends the CSR to Apple — no local PEM file needed.
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
       - name: Get dependencies
         script: flutter pub get
       - name: Pod install
