@@ -18,8 +18,10 @@
 #     CM_KEYSTORE_PASSWORD     → keystore password
 #     CM_KEY_ALIAS             → key alias inside the keystore
 #     CM_KEY_PASSWORD          → password for that alias
-#     GCLOUD_SERVICE_ACCOUNT_CREDENTIALS → JSON for the Play Console service
-#                                          account (Owner or Release Manager).
+#
+# Android workflow EMAILS the signed AAB to the developer; manual upload
+# to Play Console mirrors how Switchboard ships. No Play Console API or
+# service account required.
 #
 # Integrations (Settings → Integrations):
 #
@@ -65,10 +67,15 @@ workflows:
       - build/app/outputs/bundle/release/*.aab
       - build/app/outputs/mapping/release/mapping.txt
     publishing:
-      google_play:
-        credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
-        track: internal
-        submit_as_draft: false
+      # Email the AAB after each successful build. Manual upload to the
+      # Play Console mirrors the Switchboard workflow — no Google Play
+      # API or service account required.
+      email:
+        recipients:
+          - zack.caravan@gmail.com
+        notify:
+          success: true
+          failure: true
 
   ios:
     name: iOS (TestFlight)
