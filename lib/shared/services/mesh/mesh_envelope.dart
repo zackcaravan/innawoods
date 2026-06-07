@@ -41,7 +41,11 @@ class MeshEnvelope {
   static const int magic2 = 0x57; // W
   static const int magic3 = 0x44; // D
   static const int version = 1;
-  static const int maxCiphertextBytes = 190;
+  // Meshtastic's Data.payload caps at ~237 bytes on the wire. We need
+  // 38 bytes for our envelope header, leaving 199 for ciphertext. We use
+  // 200 as the published limit to keep the math human-readable and so a
+  // single byte of jitter doesn't reject a valid send.
+  static const int maxCiphertextBytes = 200;
 
   final MeshMsgType type;
   final Uint8List partyIdHash; // 8 bytes

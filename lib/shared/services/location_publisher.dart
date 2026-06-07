@@ -56,19 +56,21 @@ class LocationPublisher {
     required Position position,
   }) async {
     final now = DateTime.now().toUtc();
+    // Compact JSON keys to keep position ciphertext inside Meshtastic's
+    // ~237-byte payload limit. Without this, full ISO timestamps + UUIDs
+    // + named keys push us past 250 bytes and mesh broadcasts drop on the
+    // floor. Receivers tolerate both legacy long-form and compact keys.
     final payload = await _crypto.encryptJson(
       groupKey: groupKey,
       data: {
-        'lat': position.latitude,
-        'lng': position.longitude,
-        'speed': position.speed,
-        'heading': position.heading,
-        'accuracy': position.accuracy,
-        'altitude': position.altitude,
-        'ts': now.toIso8601String(),
-        // user_id inside the ciphertext so mesh receivers can attribute
-        // the fix; Supabase has its own sender_id column for the same.
-        'user_id': userId,
+        'a': position.latitude,           // lat
+        'o': position.longitude,          // lng (o for "lOngitude")
+        's': position.speed,              // speed m/s
+        'h': position.heading,            // heading deg
+        'c': position.accuracy,           // aCcuracy m
+        'e': position.altitude,           // elevation m
+        't': now.millisecondsSinceEpoch,  // unix ms
+        'u': userId,                       // user id
       },
     );
     // Both transports run in parallel, each in its own try-catch so a

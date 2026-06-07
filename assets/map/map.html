@@ -715,10 +715,11 @@
             map.setPaintProperty('overlay-trails', 'line-color',
                 on ? '#ff3d00' : '#ff5722');
           }
-          // Boost hillshade for stronger relief.
+          // Boost hillshade for stronger relief. MapLibre clamps this to
+          // [0, 1], so we max it out when the off-road style is on.
           if (map.getLayer('hillshade')) {
             map.setPaintProperty('hillshade', 'hillshade-exaggeration',
-                on ? 1.4 : 1.0);
+                on ? 1.0 : 0.7);
           }
         };
         // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.

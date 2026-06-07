@@ -84,6 +84,16 @@ class PartyLiveService {
       } catch (_) {/* network out — keep '??' until next refresh */}
     }
 
+    /// Pull a value from a decoded position payload, accepting either the
+    /// compact 1-letter key form (used by the wire-size-conscious mesh
+    /// publish path) or the legacy long-form key. Either is valid; the
+    /// compact form is preferred going forward.
+    T? pick<T>(Map data, String compact, String legacy) {
+      final v = data[compact] ?? data[legacy];
+      if (v is T) return v;
+      return null;
+    }
+
     Future<void> _absorb({
       required EncryptedPayload payload,
       required DateTime fallbackTs,
@@ -96,30 +106,38 @@ class PartyLiveService {
             payload: payload, groupKey: key);
         // user_id can come from the row (Supabase) or from inside the
         // payload (mesh path). Trust the row's value when present.
-        final uid = rowUserId ?? data['user_id'] as String?;
+        final uid = rowUserId ?? pick<String>(data, 'u', 'user_id');
         if (uid == null) return;
         if (!meta.containsKey(uid)) await hydrateMember(uid);
         final m = meta[uid];
-        final tsRaw = data['ts'] as String?;
-        final ts = tsRaw != null
-            ? (DateTime.tryParse(tsRaw)?.toUtc() ?? fallbackTs)
-            : fallbackTs;
+        // Timestamp accepts compact unix-ms int or legacy ISO string.
+        DateTime ts = fallbackTs;
+        final tsCompact = data['t'];
+        if (tsCompact is num) {
+          ts = DateTime.fromMillisecondsSinceEpoch(tsCompact.toInt(),
+                  isUtc: true);
+        } else {
+          final tsLegacy = data['ts'] as String?;
+          if (tsLegacy != null) {
+            ts = DateTime.tryParse(tsLegacy)?.toUtc() ?? fallbackTs;
+          }
+        }
         // Drop strictly-older fixes — could happen when the same packet
         // arrives via both transports out of order.
         final existing = positions[uid];
         if (existing != null && existing.updatedAt.isAfter(ts)) return;
+        final lat = pick<num>(data, 'a', 'lat');
+        final lng = pick<num>(data, 'o', 'lng');
+        if (lat == null || lng == null) return;
         positions[uid] = MemberPosition(
           userId: uid,
           callsign: m?.callsign ?? '??',
           color: m?.color ?? '#C19A6B',
-          location: LatLng(
-            (data['lat'] as num).toDouble(),
-            (data['lng'] as num).toDouble(),
-          ),
-          speed: (data['speed'] as num?)?.toDouble(),
-          heading: (data['heading'] as num?)?.toDouble(),
-          accuracy: (data['accuracy'] as num?)?.toDouble(),
-          altitude: (data['altitude'] as num?)?.toDouble(),
+          location: LatLng(lat.toDouble(), lng.toDouble()),
+          speed: pick<num>(data, 's', 'speed')?.toDouble(),
+          heading: pick<num>(data, 'h', 'heading')?.toDouble(),
+          accuracy: pick<num>(data, 'c', 'accuracy')?.toDouble(),
+          altitude: pick<num>(data, 'e', 'altitude')?.toDouble(),
           updatedAt: ts,
           isSelf: uid == selfId,
         );
