@@ -502,6 +502,12 @@ class MeshRadioService {
   /// of failure (no saved id, BT off, radio out of range, GATT discovery
   /// failed) so the user lands on the home screen without an error toast
   /// whether or not the radio is actually within reach.
+  ///
+  /// Retries up to 4 times with increasing delays because Android's BLE
+  /// stack frequently throws status 133 (GATT_ERROR) on the first
+  /// connect after a force-stop — the radio still thinks it has an
+  /// active session and won't accept a new one until its own keep-alive
+  /// times out. By attempt 2 or 3 that's usually cleared.
   Future<void> _tryAutoReconnect() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -514,7 +520,20 @@ class MeshRadioService {
       final adapter = await FlutterBluePlus.adapterState.first;
       if (adapter != BluetoothAdapterState.on) return;
       _log('auto-reconnect to $id');
-      await connect(id);
+      const delays = [
+        Duration(milliseconds: 0),
+        Duration(milliseconds: 1500),
+        Duration(milliseconds: 3000),
+        Duration(milliseconds: 5000),
+      ];
+      for (var attempt = 0; attempt < delays.length; attempt++) {
+        if (attempt > 0) {
+          await Future<void>.delayed(delays[attempt]);
+          _log('auto-reconnect retry #$attempt');
+        }
+        await connect(id);
+        if (_state != MeshConnectionState.disconnected) return;
+      }
     } catch (e) {
       _log('auto-reconnect skipped: $e');
     }
