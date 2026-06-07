@@ -23,11 +23,13 @@
 # to Play Console mirrors how Switchboard ships. No Play Console API or
 # service account required.
 #
-# Integrations (Settings → Integrations):
-#
-#   app-store-connect    → an App Store Connect API key. Used by the iOS
-#                          workflow to fetch signing certs + upload to
-#                          TestFlight automatically.
+#   ios-signing          (iOS workflow — reused from Switchboard, team-level)
+#     APP_STORE_CONNECT_PRIVATE_KEY     → base64 of the .p8 file
+#     APP_STORE_CONNECT_KEY_IDENTIFIER  → e.g. 7G2FLHV3K3
+#     APP_STORE_CONNECT_ISSUER_ID       → UUID from ASC → Users and Access
+#     CERTIFICATE_PRIVATE_KEY           → base64-encoded PEM of the iOS
+#                                         Distribution certificate's private
+#                                         key. Same value Switchboard uses.
 #
 # App Store Connect & Google Play app records must already exist with bundle
 # id `com.innawoods.innawoods`. APP_STORE_APPLE_ID below needs to be filled
@@ -83,53 +85,62 @@ workflows:
     name: iOS (TestFlight)
     instance_type: mac_mini_m2
     max_build_duration: 90
-    integrations:
-      app_store_connect: app-store-connect
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
       groups:
         - supabase-prod
+        - ios-signing
       vars:
         BUNDLE_ID: com.innawoods.innawoods
         APP_STORE_APPLE_ID: 6777637554
     # Manual trigger only — see notes on the Android workflow above.
     scripts:
-      - name: Set up code signing
+      - name: Set up keychain
+        script: keychain initialize
+      - name: Fetch signing files from Apple
+        # Mirrors the Switchboard workflow exactly. The ASC API Team Key
+        # + the iOS Distribution Certificate's private key are both
+        # team-level secrets that work across every app on this team,
+        # so we reuse Switchboard's existing values via env vars.
         script: |
+          echo "$APP_STORE_CONNECT_PRIVATE_KEY" | base64 --decode > /tmp/auth_key.p8
+          echo "$CERTIFICATE_PRIVATE_KEY" | base64 --decode > /tmp/cert_key.pem
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE --create
-          keychain initialize
-          keychain add-certificates
-          xcode-project use-profiles
+            --type IOS_APP_STORE \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --private-key @file:/tmp/auth_key.p8 \
+            --certificate-key @file:/tmp/cert_key.pem \
+            --create
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+      - name: Set up code signing settings
+        script: xcode-project use-profiles
       - name: Get dependencies
         script: flutter pub get
       - name: Pod install
-        script: |
-          cd ios && pod install
+        script: cd ios && pod install
       - name: Generate Riverpod providers
         script: dart run build_runner build --delete-conflicting-outputs
       - name: Bump build number to match TestFlight
-        # Reads the latest build number that App Store Connect has on file
-        # and bumps from there, so we never collide on re-runs.
+        # Reads the latest build number on file in App Store Connect and
+        # bumps from there so re-runs never collide.
         script: |
           cd ios
           LATEST_BUILD_NUMBER=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID")
           agvtool new-version -all $(($LATEST_BUILD_NUMBER + 1))
       - name: Build .ipa
-        # Single-line invocation with quoted env-var expansion — see note
-        # on Android build. Also dropped the --export-options-plist flag;
-        # xcode-project use-profiles in the signing step generates the
-        # plist on Codemagic's runner.
+        # Single-line invocation with quoted env-var expansion to defend
+        # against any whitespace inside the env values.
         script: flutter build ipa --release --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
     publishing:
       app_store_connect:
-        auth: integration
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
-        # Optionally also notify external testers automatically:
-        # beta_groups:
-        #   - "Inner crew"
