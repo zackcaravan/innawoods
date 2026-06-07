@@ -352,7 +352,7 @@ class _PartyByIdProviderElement extends AutoDisposeFutureProviderElement<Party?>
   String get partyId => (origin as PartyByIdProvider).partyId;
 }
 
-String _$locationPublisherHash() => r'3e3975b0d5ae051bbf937866940475e0cb01464e';
+String _$locationPublisherHash() => r'3b0d3c0058af2a31e4c282ba0db28a4f5bbde5c7';
 
 /// See also [locationPublisher].
 @ProviderFor(locationPublisher)
@@ -370,7 +370,7 @@ final locationPublisherProvider =
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef LocationPublisherRef = AutoDisposeProviderRef<LocationPublisher>;
-String _$partyLiveServiceHash() => r'ae1532fcb6ed09ec7f389ec0e81c7a00e4b7dcdb';
+String _$partyLiveServiceHash() => r'cb164cdcb2c56f99339f049a3a56d416b282b0c8';
 
 /// See also [partyLiveService].
 @ProviderFor(partyLiveService)
@@ -1035,7 +1035,7 @@ class _PartyRouteWaypointsProviderElement
   String get partyId => (origin as PartyRouteWaypointsProvider).partyId;
 }
 
-String _$chatServiceHash() => r'fd536f3526fc7c1837632442bc7ba716d036c840';
+String _$chatServiceHash() => r'cce72ae5d22b3592f5fd989ed5b48459c7a7a418';
 
 /// See also [chatService].
 @ProviderFor(chatService)

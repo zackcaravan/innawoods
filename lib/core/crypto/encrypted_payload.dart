@@ -42,16 +42,36 @@ class EncryptedPayload {
   }
 
   /// Decode a blob read back from the server.
-  factory EncryptedPayload.fromWire(String wire) {
-    final bytes = base64.decode(wire);
+  factory EncryptedPayload.fromWire(String wire) =>
+      EncryptedPayload.fromBytes(base64.decode(wire));
+
+  /// Raw concatenated bytes — used by the mesh bridge so we don't pay the
+  /// base64-encode→decode roundtrip when going over LoRa instead of HTTP.
+  Uint8List toBytes() {
+    final out = Uint8List(nonce.length + cipherText.length + mac.length);
+    out
+      ..setRange(0, nonce.length, nonce)
+      ..setRange(nonce.length, nonce.length + cipherText.length, cipherText)
+      ..setRange(nonce.length + cipherText.length, out.length, mac);
+    return out;
+  }
+
+  factory EncryptedPayload.fromBytes(List<int> bytes) {
     if (bytes.length < nonceLength + macLength) {
       throw const FormatException('Encrypted payload is too short to be valid');
     }
     return EncryptedPayload(
-      nonce: Uint8List.sublistView(bytes, 0, nonceLength),
-      cipherText:
-          Uint8List.sublistView(bytes, nonceLength, bytes.length - macLength),
-      mac: Uint8List.sublistView(bytes, bytes.length - macLength),
+      nonce: Uint8List.sublistView(
+          bytes is Uint8List ? bytes : Uint8List.fromList(bytes),
+          0,
+          nonceLength),
+      cipherText: Uint8List.sublistView(
+          bytes is Uint8List ? bytes : Uint8List.fromList(bytes),
+          nonceLength,
+          bytes.length - macLength),
+      mac: Uint8List.sublistView(
+          bytes is Uint8List ? bytes : Uint8List.fromList(bytes),
+          bytes.length - macLength),
     );
   }
 }

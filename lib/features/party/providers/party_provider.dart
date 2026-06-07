@@ -25,6 +25,7 @@ import '../../../shared/services/route_service.dart';
 import '../../../shared/services/route_waypoint_service.dart';
 import '../../../shared/services/routing_service.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../mesh/providers/mesh_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 
 part 'party_provider.g.dart';
@@ -65,6 +66,7 @@ Future<Party?> partyById(Ref ref, String partyId) =>
 LocationPublisher locationPublisher(Ref ref) => LocationPublisher(
       ref.watch(supabaseClientProvider),
       ref.watch(cryptoServiceProvider),
+      ref.watch(meshBridgeProvider),
     );
 
 @riverpod
@@ -72,6 +74,7 @@ PartyLiveService partyLiveService(Ref ref) => PartyLiveService(
       ref.watch(supabaseClientProvider),
       ref.watch(cryptoServiceProvider),
       ref.watch(cryptoSessionProvider),
+      ref.watch(meshBridgeProvider),
     );
 
 /// Live decrypted member positions for a party (realtime).
@@ -132,6 +135,7 @@ ChatService chatService(Ref ref) => ChatService(
       ref.watch(supabaseClientProvider),
       ref.watch(cryptoServiceProvider),
       ref.watch(cryptoSessionProvider),
+      ref.watch(meshBridgeProvider),
     );
 
 /// Live decrypted chat for a party (realtime).

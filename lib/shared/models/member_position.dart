@@ -11,14 +11,18 @@ class MemberPosition {
     required this.isSelf,
     this.speed,
     this.heading,
+    this.accuracy,
+    this.altitude,
   });
 
   final String userId;
   final String callsign;
   final String color; // hex
   final LatLng location;
-  final double? speed; // m/s
-  final double? heading; // degrees
+  final double? speed;     // m/s
+  final double? heading;   // degrees
+  final double? accuracy;  // meters (horizontal)
+  final double? altitude;  // meters above sea level
   final DateTime updatedAt; // UTC
   final bool isSelf;
 

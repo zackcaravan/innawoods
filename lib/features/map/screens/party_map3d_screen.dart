@@ -562,47 +562,19 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     );
   }
 
+  /// Detailed sheet for a tapped party member — matches the depth of the
+  /// "Where am I" sheet for the self dot (callsign, coords, last-seen,
+  /// speed, heading, accuracy, altitude + distance and bearing from us).
   Future<void> _showMemberInfo(MemberPosition m) async {
     final fmt = _currentSettings?.coordFormat ?? CoordFormat.latLonDecimal;
-    final coords = formatCoord(m.location.latitude, m.location.longitude, fmt);
-    final ago = m.age;
-    String agoTxt;
-    if (ago.inSeconds < 60) {
-      agoTxt = 'just now';
-    } else if (ago.inMinutes < 60) {
-      agoTxt = '${ago.inMinutes} min ago';
-    } else {
-      agoTxt = '${ago.inHours} h ${ago.inMinutes.remainder(60)} m ago';
-    }
+    final self = _members.where((mp) => mp.isSelf).firstOrNull;
     if (!mounted) return;
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dctx) => AlertDialog(
-        title: Text(m.callsign),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(coords),
-            const SizedBox(height: 6),
-            Text('Last seen: $agoTxt',
-                style: const TextStyle(color: Colors.white54, fontSize: 12)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: coords));
-              Navigator.of(dctx).pop();
-            },
-            child: const Text('Copy'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dctx).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _MemberInfoSheet(member: m, self: self, format: fmt),
     );
   }
 
@@ -3106,6 +3078,193 @@ class _ActionButton extends StatelessWidget {
                       color: fg, fontWeight: FontWeight.w500, fontSize: 13)),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// Member info — full readout for another party member's dot. Matches the
+// depth of the self-dot "Where am I" sheet (coords, last seen, speed,
+// heading, accuracy, altitude) and adds the relative bits that only make
+// sense when looking at someone ELSE: range from us and bearing from us.
+// ===========================================================================
+class _MemberInfoSheet extends StatelessWidget {
+  const _MemberInfoSheet({
+    required this.member,
+    required this.self,
+    required this.format,
+  });
+  final MemberPosition member;
+  final MemberPosition? self;
+  final CoordFormat format;
+
+  String _agoText(Duration d) {
+    if (d.inSeconds < 60) return 'just now';
+    if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+    if (d.inHours < 24) {
+      final m = d.inMinutes.remainder(60);
+      return '${d.inHours} h ${m == 0 ? '' : '$m m '}ago';
+    }
+    return '${d.inDays} d ago';
+  }
+
+  /// Compass bearing from `from` → `to`, degrees [0, 360).
+  double _bearing(LatLng from, LatLng to) {
+    const d = Distance();
+    return d.bearing(from, to) % 360;
+  }
+
+  /// Cardinal label for a degrees bearing, 8-way.
+  String _cardinal(double deg) {
+    const labels = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    final idx = ((deg + 22.5) / 45).floor() % 8;
+    return labels[idx];
+  }
+
+  String _distLabel(double meters) {
+    final mi = meters / 1609.344;
+    final ft = meters * 3.28084;
+    if (mi < 0.1) return '${ft.toStringAsFixed(0)} ft';
+    return '${mi.toStringAsFixed(mi < 10 ? 2 : 1)} mi';
+  }
+
+  String _altLabel(double m) {
+    final ft = m * 3.28084;
+    return '${ft.toStringAsFixed(0)} ft (${m.toStringAsFixed(0)} m)';
+  }
+
+  Widget _row(String label, String value, {Color? valueColor}) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 110,
+              child: Text(label,
+                  style: const TextStyle(
+                      color: Colors.white54, fontSize: 13)),
+            ),
+            Expanded(
+              child: Text(value,
+                  style: TextStyle(
+                      fontSize: 14, color: valueColor ?? Colors.white)),
+            ),
+          ],
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final m = member;
+    final coords =
+        formatCoord(m.location.latitude, m.location.longitude, format);
+    final ago = _agoText(m.age);
+    final stale = m.isStale;
+    double? rangeM;
+    double? bearingDeg;
+    if (self != null) {
+      const d = Distance();
+      rangeM = d.as(LengthUnit.Meter, self!.location, m.location);
+      bearingDeg = _bearing(self!.location, m.location);
+    }
+    return DraggableScrollableSheet(
+      initialChildSize: 0.46,
+      minChildSize: 0.22,
+      maxChildSize: 0.85,
+      expand: false,
+      builder: (_, controller) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF1C1E1A),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        child: ListView(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Row(children: [
+              Container(
+                width: 16, height: 16,
+                decoration: BoxDecoration(
+                  color: _parseHex(m.color),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white24),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(m.callsign,
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w600)),
+              ),
+              if (stale)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Icon(Icons.warning_amber,
+                      color: Colors.amber, size: 18),
+                ),
+            ]),
+            const Divider(height: 22),
+            _row('Position', coords),
+            _row('Last seen', ago,
+                valueColor: stale ? Colors.amber : null),
+            if (rangeM != null && bearingDeg != null) ...[
+              _row('Range from you', _distLabel(rangeM)),
+              _row(
+                  'Bearing',
+                  '${bearingDeg.toStringAsFixed(0)}° ${_cardinal(bearingDeg)}'),
+            ],
+            if (m.speed != null && m.speed!.isFinite)
+              _row(
+                  'Speed',
+                  '${(m.speed! * 2.23694).toStringAsFixed(1)} mph '
+                      '(${(m.speed!).toStringAsFixed(1)} m/s)'),
+            if (m.heading != null &&
+                m.heading!.isFinite &&
+                m.heading! >= 0)
+              _row(
+                  'Heading',
+                  '${m.heading!.toStringAsFixed(0)}° '
+                      '${_cardinal(m.heading!)}'),
+            if (m.accuracy != null && m.accuracy!.isFinite)
+              _row('GPS accuracy', '±${m.accuracy!.toStringAsFixed(0)} m'),
+            if (m.altitude != null && m.altitude!.isFinite)
+              _row('Elevation', _altLabel(m.altitude!)),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: coords));
+                      Navigator.of(context).pop();
+                    },
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copy coords'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                    label: const Text('Close'),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
