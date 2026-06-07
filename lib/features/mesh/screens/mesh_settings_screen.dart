@@ -106,7 +106,7 @@ class _MeshSettingsScreenState extends ConsumerState<MeshSettingsScreen> {
       ),
     );
     if (ok != true) return;
-    await ref.read(meshRadioServiceProvider).disconnect();
+    await ref.read(meshRadioServiceProvider).forget();
   }
 
   @override

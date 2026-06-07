@@ -25,6 +25,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'generated/meshtastic/mesh.pb.dart' as pb;
 
@@ -107,7 +108,16 @@ enum MeshConnectionState { disconnected, scanning, connecting, syncing, ready }
 /// Singleton-ish service: one paired radio at a time. Survives across
 /// screens via Riverpod keepAlive.
 class MeshRadioService {
-  MeshRadioService();
+  MeshRadioService() {
+    // Best-effort silent reconnect to whatever was paired last. Runs on
+    // construction (the Riverpod provider builds the service at app
+    // launch). If the radio is off / out of range, we just stay in the
+    // disconnected state — no toast, no error. User can re-pair via
+    // Settings → LoRa wizard whenever they're ready.
+    unawaited(_tryAutoReconnect());
+  }
+
+  static const _kLastPairedId = 'innawoods.mesh.lastPairedRemoteId';
 
   final _connectionStateCtrl =
       StreamController<MeshConnectionState>.broadcast();
@@ -298,6 +308,8 @@ class MeshRadioService {
           : 'Meshtastic radio',
     ));
     _setState(MeshConnectionState.syncing);
+    // Remember the id so we can silently re-pair on next app launch.
+    unawaited(_rememberPaired(remoteId));
     // Subscribe to FromNum so the radio tells us when new FromRadio bytes
     // are queued; we then drain FromRadio.read() until empty.
     if (_fromNum != null) {
@@ -310,6 +322,16 @@ class MeshRadioService {
     // Kick off a config-dump request: the radio will reply with a sequence
     // of FromRadio packets describing its node DB + channel config.
     await _requestConfig();
+  }
+
+  /// Permanently unpair — clears the saved id AND tears down the live
+  /// session. Distinct from [disconnect] which is a transient teardown
+  /// (out-of-range, app backgrounded) that the auto-reconnect path
+  /// should still recover from on next launch.
+  Future<void> forget() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kLastPairedId);
+    await disconnect();
   }
 
   Future<void> disconnect() async {
@@ -470,4 +492,31 @@ class MeshRadioService {
   /// last-paired stored in shared_preferences (Phase 8b).
   static Uint8List remoteIdBytes(String id) =>
       Uint8List.fromList(id.codeUnits);
+
+  Future<void> _rememberPaired(String remoteId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLastPairedId, remoteId);
+  }
+
+  /// Try to re-pair to whatever we paired with last. Silent on every kind
+  /// of failure (no saved id, BT off, radio out of range, GATT discovery
+  /// failed) so the user lands on the home screen without an error toast
+  /// whether or not the radio is actually within reach.
+  Future<void> _tryAutoReconnect() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final id = prefs.getString(_kLastPairedId);
+      if (id == null || id.isEmpty) return;
+      // Give the BT adapter a beat to come up after app launch on cold
+      // start — flutter_blue_plus reports `unknown` for the first ~300ms.
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      if (await FlutterBluePlus.isSupported == false) return;
+      final adapter = await FlutterBluePlus.adapterState.first;
+      if (adapter != BluetoothAdapterState.on) return;
+      _log('auto-reconnect to $id');
+      await connect(id);
+    } catch (e) {
+      _log('auto-reconnect skipped: $e');
+    }
+  }
 }
