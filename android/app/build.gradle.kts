@@ -58,12 +58,20 @@ android {
                     storeFile = file(System.getenv("CM_KEYSTORE_PATH"))
                     storePassword = System.getenv("CM_KEYSTORE_PASSWORD")
                     keyAlias = System.getenv("CM_KEY_ALIAS")
-                    keyPassword = System.getenv("CM_KEY_PASSWORD")
+                    // The innawoods keystore is PKCS12 format, which
+                    // requires keyPassword == storePassword regardless of
+                    // what keytool was told at generation time (it prints
+                    // a warning and silently uses the store password for
+                    // both). CM_KEY_PASSWORD as a separate env var is
+                    // meaningless against this keystore; force the
+                    // store password for both to avoid 'Given final
+                    // block not properly padded' at sign-bundle time.
+                    keyPassword = System.getenv("CM_KEYSTORE_PASSWORD")
                 } else {
                     storeFile = file(keystoreProperties["storeFile"] as String)
                     storePassword = keystoreProperties["storePassword"] as String
                     keyAlias = keystoreProperties["keyAlias"] as String
-                    keyPassword = keystoreProperties["keyPassword"] as String
+                    keyPassword = keystoreProperties["storePassword"] as String
                 }
             }
         }
