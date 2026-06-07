@@ -84,8 +84,7 @@ workflows:
         - supabase-prod
       vars:
         BUNDLE_ID: com.innawoods.innawoods
-        APP_STORE_APPLE_ID: 0000000000   # ← replace once App Store Connect
-                                         #   has assigned the numeric Apple ID
+        APP_STORE_APPLE_ID: 6777637554
     # Manual trigger only — see notes on the Android workflow above.
     scripts:
       - name: Set up code signing
