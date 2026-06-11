@@ -62,12 +62,19 @@ workflows:
       - name: Generate Riverpod providers
         script: dart run build_runner build --delete-conflicting-outputs
       - name: Build AAB (signed)
-        # Single-line invocation with quoted env-var expansion. Without
-        # the quotes, any stray whitespace inside the env var values
-        # would word-split: bash would peel the URL off as its own arg,
-        # Flutter would see it as the positional target file and fail
-        # with 'Target file https://... not found.'
-        script: flutter build appbundle --release --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+        # --build-number overrides the +N in pubspec.yaml so every CI
+        # build gets a unique, monotonically-increasing versionCode.
+        # Codemagic guarantees $PROJECT_BUILD_NUMBER never resets and
+        # never skips, so this satisfies Play Console's strict
+        # "versionCode must be > previous upload" rule without any
+        # human bookkeeping. pubspec stays pinned at 1.0.0+1 as the
+        # local-dev default.
+        #
+        # Single-line invocation with quoted env-var expansion: without
+        # the quotes, stray whitespace inside the supabase env values
+        # would word-split and Flutter would treat the URL as its
+        # positional target arg.
+        script: flutter build appbundle --release --build-number=$PROJECT_BUILD_NUMBER --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
     artifacts:
       - build/app/outputs/bundle/release/*.aab
       - build/app/outputs/mapping/release/mapping.txt

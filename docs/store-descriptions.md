@@ -61,8 +61,9 @@ WHAT YOU GET
 • Push notifications when someone invites you to a party
 
 SOURCE AVAILABLE
-Innawoods is open source under the GNU AGPL-3.0 license — the same license
-Signal and Element use. The repository at github.com/zackcaravan/innawoods
+Innawoods is open source under the GNU AGPL-3.0 license — a strong
+copyleft license that requires anyone running a derivative as a service
+to publish their changes. The repository at github.com/zackcaravan/innawoods
 is the exact code you're installing. Build it yourself if you'd rather
 trust the toolchain than a signed binary; install from the App Store if
 you'd rather skip the build steps. Both paths are first-class.
@@ -149,8 +150,9 @@ WHAT YOU GET
 • Push notifications when someone invites you to a party
 
 SOURCE AVAILABLE
-Innawoods is open source under the GNU AGPL-3.0 license — the same license
-Signal and Element use. The repository at github.com/zackcaravan/innawoods
+Innawoods is open source under the GNU AGPL-3.0 license — a strong
+copyleft license that requires anyone running a derivative as a service
+to publish their changes. The repository at github.com/zackcaravan/innawoods
 is the exact code you're installing. Build it yourself if you'd rather
 trust the toolchain than a signed binary; install from Google Play if
 you'd rather skip the build steps. Both paths are first-class.
