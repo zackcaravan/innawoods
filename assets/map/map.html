@@ -988,6 +988,44 @@
               String(routeHit[0].properties.id || ''));
             return;
           }
+          // Trail / minor-road tap → pop an info sheet on the Flutter side.
+          // We test all the layers that surface the `roads_other` source-layer
+          // (paths, tracks, unclassified ways and their bridge/tunnel variants)
+          // so the user can tap any rendered trail and get its name + props.
+          const trailLayers = [
+            'roads_other',
+            'roads_bridges_other',
+            'roads_tunnels_other',
+          ].filter(id => !!map.getLayer(id));
+          if (trailLayers.length) {
+            const trailHit = map.queryRenderedFeatures(box, { layers: trailLayers });
+            if (trailHit.length) {
+              const f = trailHit[0];
+              const p = f.properties || {};
+              // Geometry of the rendered segment — fed back so Dart can
+              // sample elevation and (in route-designer mode) append the
+              // line to the active route draft.
+              const geom = (f.geometry && f.geometry.type === 'LineString')
+                ? f.geometry.coordinates
+                : (f.geometry && f.geometry.type === 'MultiLineString')
+                  ? (f.geometry.coordinates[0] || [])
+                  : [];
+              window.flutter_inappwebview.callHandler('trailTap',
+                JSON.stringify({
+                  tapLng: e.lngLat.lng,
+                  tapLat: e.lngLat.lat,
+                  name: p.name || '',
+                  kind: p.kind || p['pmap:kind'] || '',
+                  kindDetail: p.kind_detail || p['pmap:kind_detail'] || '',
+                  surface: p.surface || '',
+                  // Geometry as [[lng,lat], ...] in tile-pixel order; Dart
+                  // converts to LatLng. Limited to ~500 points to keep the
+                  // bridge payload small even on heavily-curved ways.
+                  coords: geom.slice(0, 500),
+                }));
+              return;
+            }
+          }
           window.flutter_inappwebview.callHandler('mapTap',
             JSON.stringify({ lng: e.lngLat.lng, lat: e.lngLat.lat }));
         });

@@ -159,10 +159,23 @@ Stream<List<ChatMessage>> partyMessages(Ref ref, String partyId) =>
 Stream<Position> selfPosition(Ref ref) async* {
   final publisher = ref.read(locationPublisherProvider);
   if (!await publisher.ensurePermission()) return;
+  // Power profile derives from trip mode. Trip mode trades GPS responsiveness
+  // for battery — lower fix accuracy (medium ≈ ~50 m vs high's ~5 m) lets
+  // the chip use cell+wifi triangulation more aggressively, and a wider
+  // distanceFilter throttles how often the stream wakes us up at all. At
+  // hiking pace (4 mph) the user covers 20 m in ~11 s, so a fresh fix every
+  // ~10 s is still plenty for the live-map dot to feel alive without burning
+  // GPS through the day. Default profile is unchanged for backwards compat
+  // with the responsiveness the original screen-on UX assumed.
+  final settings = await ref.read(settingsControllerProvider.future);
+  final accuracy = settings.tripMode
+      ? LocationAccuracy.medium
+      : LocationAccuracy.high;
+  final filterM = settings.tripMode ? 20 : 5;
   yield* Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 5,
+    locationSettings: LocationSettings(
+      accuracy: accuracy,
+      distanceFilter: filterM,
     ),
   );
 }

@@ -164,6 +164,17 @@ class _Body extends ConsumerWidget {
               'battery slider. Shows a TRIP badge on the map while on.'),
           secondary: const Icon(Icons.eco_outlined),
         ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: settings.searchLimitToRegion,
+          onChanged: (v) =>
+              controller.save(settings.copyWith(searchLimitToRegion: v)),
+          title: const Text('Limit search to downloaded region'),
+          subtitle: const Text(
+              'Drop any place-search result outside your active region. '
+              'Off → distant matches still rank in (camera-biased).'),
+          secondary: const Icon(Icons.crop_free),
+        ),
         // Off-road style lives in the map's Layers drawer instead of here —
         // it's a "moment's notice" visual toggle and Settings is for things
         // you set once and forget. See party_map3d_screen `_showLayersSheet`.

@@ -13,13 +13,25 @@ import '../models/place.dart';
 /// Privacy note: the query text goes to the Photon server, like tile requests.
 /// Self-hostable later for a fully private search.
 class GeocoderService {
-  Future<List<Place>> search(String query, {LatLng? near}) async {
+  /// Search Photon for places matching [query].
+  ///
+  /// [near] biases ranking toward a point (Photon ranks by distance to it).
+  /// [bbox] hard-filters results to a `[minLon, minLat, maxLon, maxLat]`
+  /// box — used to scope search to the user's downloaded region when they
+  /// don't want out-of-state matches at all.
+  Future<List<Place>> search(
+    String query, {
+    LatLng? near,
+    List<double>? bbox,
+  }) async {
     if (query.trim().length < 2) return [];
     final uri = Uri.https('photon.komoot.io', '/api/', {
       'q': query,
       'limit': '8',
       if (near != null) 'lat': '${near.latitude}',
       if (near != null) 'lon': '${near.longitude}',
+      if (bbox != null && bbox.length == 4)
+        'bbox': bbox.map((d) => d.toString()).join(','),
     });
     final resp = await http.get(uri, headers: {'User-Agent': 'innawoods/0.1'});
     if (resp.statusCode != 200) return [];

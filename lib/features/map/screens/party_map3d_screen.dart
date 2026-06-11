@@ -262,7 +262,11 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       _overlays[id] = prefs.getBool(_overlayKey(id)) ?? false;
     }
     _imagery = prefs.getString(_kImagery);
-    _hybrid = prefs.getBool(_kHybrid) ?? false;
+    // Default hybrid ON for new users — satellite without labels reads as a
+    // "broken" map (no roads, no town names, no POIs); the previous default
+    // of false routinely caught test users out. Explicit user choice still
+    // wins on subsequent launches.
+    _hybrid = prefs.getBool(_kHybrid) ?? true;
   }
 
   Future<void> _setOverlay(String id, bool visible) async {
@@ -273,6 +277,7 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
   }
 
   Future<void> _setImagery(String? id) async {
+    final wasNull = _imagery == null;
     setState(() => _imagery = id);
     await _eval('setImagery(${id == null ? 'null' : jsonEncode(id)})');
     final prefs = await SharedPreferences.getInstance();
@@ -280,6 +285,13 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       await prefs.remove(_kImagery);
     } else {
       await prefs.setString(_kImagery, id);
+      // Going from "no imagery" to "some imagery" auto-enables hybrid so the
+      // satellite isn't a barren imagery dump (no labels, no road names).
+      // We don't touch hybrid on imagery-to-imagery switches because the
+      // user has already made their preference clear by that point.
+      if (wasNull && !_hybrid) {
+        await _setHybrid(true);
+      }
     }
   }
 
@@ -556,6 +568,71 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       return;
     }
     if (_drawing) _addDrawPoint(point);
+  }
+
+  /// Tap on a rendered trail / minor road → pop the info sheet. Payload from
+  /// map.html carries the OSM-derived properties (name, kind, surface, …)
+  /// plus the rendered LineString coords so we can sample elevation and —
+  /// in route-designer mode — splice the trail into the active draft.
+  Future<void> _onTrailTap(String json) async {
+    if (!mounted) return;
+    final Map<String, dynamic> m;
+    try {
+      m = jsonDecode(json) as Map<String, dynamic>;
+    } catch (_) {
+      return; // malformed payload, ignore
+    }
+    final coordsRaw = (m['coords'] as List?) ?? const [];
+    final coords = <LatLng>[
+      for (final c in coordsRaw)
+        if (c is List && c.length >= 2)
+          LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble()),
+    ];
+    final info = _TrailHitInfo(
+      tap: LatLng((m['tapLat'] as num).toDouble(),
+          (m['tapLng'] as num).toDouble()),
+      name: ((m['name'] as String?) ?? '').trim(),
+      kind: ((m['kind'] as String?) ?? '').trim(),
+      kindDetail: ((m['kindDetail'] as String?) ?? '').trim(),
+      surface: ((m['surface'] as String?) ?? '').trim(),
+      coords: coords,
+    );
+    final baseUrl = (_url ?? '').replaceFirst('/map.html', '');
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: AppTheme.surfaceGrey,
+      builder: (_) => _TrailInfoSheet(
+        info: info,
+        baseUrl: baseUrl,
+        canAddToRoute: _drawing && coords.length >= 2,
+        onAddToRoute: () {
+          Navigator.of(context).pop();
+          _appendTrailToDraft(coords);
+        },
+      ),
+    );
+  }
+
+  /// Append a trail's polyline to the active draft route. Inserts the trail
+  /// as a single segment between two new waypoints (its endpoints), so undo
+  /// removes the whole trail at once. If the draft already had a tail point
+  /// elsewhere, the routing service auto-connects to the trail's entrance
+  /// per the user's snap setting.
+  Future<void> _appendTrailToDraft(List<LatLng> trail) async {
+    if (trail.length < 2 || !_drawing) return;
+    // First: drop the entrance waypoint. This routes through the normal
+    // draw path so snap-to-roads is honored if the user has it on.
+    await _addDrawPoint(trail.first);
+    if (!mounted || !_drawing) return;
+    // Then: splice the trail itself as the connector to its end, bypassing
+    // routing — the trail polyline *is* the route here.
+    setState(() {
+      _segments.add(List.of(trail));
+      _draft.add(trail.last);
+    });
+    _push('setDraft', _draftGeo());
   }
 
   Future<void> _dropWaypointAt(String routeId, LatLng point) async {
@@ -1171,13 +1248,26 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       builder: (_) => _SearchSheet(
         // Bias search toward where the user is currently looking. Photon
         // ranks results by distance to (lat, lon) when provided, so a query
-        // like "Salmon Creek" prefers the Salmon Creek 20 mi from the
-        // viewport over the one in Maine. The user isn't locked out of
-        // distant matches — they just rank below nearby ones.
-        onSearch: (q) => ref.read(geocoderServiceProvider).search(
-              q,
-              near: LatLng(_camera.value.lat, _camera.value.lng),
-            ),
+        // like "Salmon Creek" prefers the one 20 mi from the viewport over
+        // the one in Maine. When `searchLimitToRegion` is on, we additionally
+        // pass the active region's bbox so distant matches are dropped
+        // outright — the "I'm only ever going to be in WA" workflow.
+        onSearch: (q) {
+          final limit = _currentSettings?.searchLimitToRegion ?? false;
+          List<double>? bbox;
+          if (limit) {
+            final activeId = ref.read(activeRegionProvider).valueOrNull;
+            if (activeId != null) {
+              final region = ref.read(regionCatalogProvider).byId(activeId);
+              if (region != null) bbox = region.bbox;
+            }
+          }
+          return ref.read(geocoderServiceProvider).search(
+                q,
+                near: LatLng(_camera.value.lat, _camera.value.lng),
+                bbox: bbox,
+              );
+        },
         onNearby: _nearbyPois,
       ),
     );
@@ -1585,6 +1675,12 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                   handlerName: 'memberTap',
                   callback: (a) {
                     if (a.isNotEmpty) _onMemberTap(a.first as String);
+                    return null;
+                  });
+              controller.addJavaScriptHandler(
+                  handlerName: 'trailTap',
+                  callback: (a) {
+                    if (a.isNotEmpty) _onTrailTap(a.first as String);
                     return null;
                   });
               controller.addJavaScriptHandler(
@@ -3958,6 +4054,282 @@ class _SearchSheetState extends State<_SearchSheet> {
                         ]),
         ),
       ]),
+    );
+  }
+}
+
+// ===========================================================================
+// Trail info sheet — appears when the user taps a rendered path / track
+// ===========================================================================
+
+/// Properties + geometry decoded from the JS `trailTap` payload.
+class _TrailHitInfo {
+  const _TrailHitInfo({
+    required this.tap,
+    required this.name,
+    required this.kind,
+    required this.kindDetail,
+    required this.surface,
+    required this.coords,
+  });
+
+  /// Where the user actually tapped (used for the elevation read-out).
+  final LatLng tap;
+
+  /// OSM `name` if present, else empty.
+  final String name;
+
+  /// Protomaps `kind` (e.g. `path`, `other`).
+  final String kind;
+
+  /// Protomaps `kind_detail` (e.g. `track`, `footway`) — present on
+  /// pmtiles built with the extended attribute set; falls back to empty
+  /// when our extract didn't preserve it.
+  final String kindDetail;
+
+  /// OSM `surface` tag (e.g. `gravel`, `dirt`).
+  final String surface;
+
+  /// The rendered LineString in [lat,lng] order. Used to sample elevation
+  /// and to splice into a draft route.
+  final List<LatLng> coords;
+
+  String get displayName => name.isNotEmpty ? name : 'Unnamed trail';
+
+  /// Human-readable trail type assembled from the OSM tags we got back.
+  /// Falls back to bare "Trail" when we have nothing.
+  String get displayKind {
+    final parts = <String>[];
+    final detail = kindDetail.isNotEmpty ? kindDetail : kind;
+    if (detail.isNotEmpty) {
+      parts.add(_humaniseKind(detail));
+    }
+    if (surface.isNotEmpty) parts.add(_humaniseSurface(surface));
+    return parts.isEmpty ? 'Trail' : parts.join(' · ');
+  }
+
+  static String _humaniseKind(String k) {
+    switch (k) {
+      case 'path':
+      case 'footway':
+        return 'Path';
+      case 'track':
+        return 'Track';
+      case 'cycleway':
+        return 'Cycleway';
+      case 'bridleway':
+        return 'Bridleway';
+      case 'other':
+        return 'Minor road';
+      default:
+        return k[0].toUpperCase() + k.substring(1).replaceAll('_', ' ');
+    }
+  }
+
+  static String _humaniseSurface(String s) {
+    return s[0].toUpperCase() + s.substring(1).replaceAll('_', ' ');
+  }
+}
+
+/// Modal sheet shown on trail-tap. Loads an elevation profile lazily,
+/// shows the tap-point elevation alongside the trail's name/kind/surface,
+/// and offers an "Add to route" action when the user is mid-design.
+class _TrailInfoSheet extends StatefulWidget {
+  const _TrailInfoSheet({
+    required this.info,
+    required this.baseUrl,
+    required this.canAddToRoute,
+    required this.onAddToRoute,
+  });
+
+  final _TrailHitInfo info;
+  final String baseUrl;
+  final bool canAddToRoute;
+  final VoidCallback onAddToRoute;
+
+  @override
+  State<_TrailInfoSheet> createState() => _TrailInfoSheetState();
+}
+
+class _TrailInfoSheetState extends State<_TrailInfoSheet> {
+  DemSampler? _sampler;
+  double? _tapElevM;
+  ElevationStats? _stats;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadElevation();
+  }
+
+  Future<void> _loadElevation() async {
+    if (widget.baseUrl.isEmpty) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+    final s = DemSampler(baseUrl: widget.baseUrl);
+    _sampler = s;
+    final tapEl = await s.elevationAt(widget.info.tap.latitude,
+        widget.info.tap.longitude);
+    if (!mounted) return;
+    setState(() => _tapElevM = tapEl);
+    // Profile is optional polish — skip when the trail segment is trivially
+    // short (one-segment edges of a tile, etc.).
+    if (widget.info.coords.length >= 2) {
+      final samples = await s.sampleAlong(widget.info.coords, n: 48);
+      if (!mounted) return;
+      setState(() {
+        _stats = ElevationStats.from(samples);
+        _loading = false;
+      });
+    } else {
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _sampler?.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final info = widget.info;
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 16, right: 16, top: 12,
+        bottom: 16 + MediaQuery.viewInsetsOf(context).bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40, height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Row(children: [
+            const Icon(Icons.hiking, color: AppTheme.amber),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                info.displayName,
+                style: Theme.of(context).textTheme.titleMedium,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Text(
+            info.displayKind,
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          // Tap-point elevation + total ascent/descent for the visible segment.
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Row(children: [
+                SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 10),
+                Text('Reading elevation…',
+                    style: TextStyle(color: Colors.white60)),
+              ]),
+            )
+          else
+            _TrailElevationRow(
+              tapElevM: _tapElevM,
+              stats: _stats,
+            ),
+          if (widget.canAddToRoute) ...[
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: widget.onAddToRoute,
+                icon: const Icon(Icons.add_road),
+                label: const Text('Add to route'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppTheme.amber,
+                  foregroundColor: Colors.black,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Splices this visible trail segment into your draft. '
+              'Tap successive trails to chain them.',
+              style: TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact elevation read-out for the trail sheet — tap-point altitude on
+/// the left, ascent/descent for the visible segment on the right.
+class _TrailElevationRow extends StatelessWidget {
+  const _TrailElevationRow({required this.tapElevM, required this.stats});
+
+  final double? tapElevM;
+  final ElevationStats? stats;
+
+  String _ft(double? m) {
+    if (m == null) return '—';
+    return '${(m * 3.28084).round()} ft';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = stats;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        _ElevCell(label: 'At tap', value: _ft(tapElevM)),
+        _ElevCell(
+          label: 'Ascent',
+          value: s == null ? '—' : '+${_ft(s.ascentM).replaceAll(' ft', '')} ft',
+        ),
+        _ElevCell(
+          label: 'Descent',
+          value: s == null
+              ? '—'
+              : '−${_ft(s.descentM).replaceAll(' ft', '')} ft',
+        ),
+      ],
+    );
+  }
+}
+
+class _ElevCell extends StatelessWidget {
+  const _ElevCell({required this.label, required this.value});
+  final String label;
+  final String value;
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        const SizedBox(height: 2),
+        Text(value,
+            style:
+                const TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+      ],
     );
   }
 }

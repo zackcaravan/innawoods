@@ -18,6 +18,7 @@ class AppSettings {
     this.tripMode = false,
     this.offRoadStyle = false,
     this.autoHeadingUp = true,
+    this.searchLimitToRegion = false,
   });
 
   /// How often to publish your position. 30 s default; up to 5 min to save battery.
@@ -56,6 +57,12 @@ class AppSettings {
   /// Off → heading-up is a manual toggle only (compass double-tap).
   final bool autoHeadingUp;
 
+  /// When true, place-search results are hard-filtered to the active
+  /// region's bounding box. Default false — the geocoder still biases by
+  /// camera center, but distant matches can rank in. Useful for "I'm only
+  /// going to be in WA, stop showing me Salmon Creek in Maine."
+  final bool searchLimitToRegion;
+
   /// Effective location-publish interval (in seconds) accounting for trip mode.
   int get effectiveLocationIntervalSeconds =>
       tripMode ? 90 : locationIntervalSeconds;
@@ -71,6 +78,7 @@ class AppSettings {
     bool? tripMode,
     bool? offRoadStyle,
     bool? autoHeadingUp,
+    bool? searchLimitToRegion,
   }) =>
       AppSettings(
         locationIntervalSeconds:
@@ -84,6 +92,7 @@ class AppSettings {
         tripMode: tripMode ?? this.tripMode,
         offRoadStyle: offRoadStyle ?? this.offRoadStyle,
         autoHeadingUp: autoHeadingUp ?? this.autoHeadingUp,
+        searchLimitToRegion: searchLimitToRegion ?? this.searchLimitToRegion,
       );
 }
 
@@ -98,6 +107,7 @@ class SettingsStore {
   static const _kTripMode = 'innawoods.settings.tripMode';
   static const _kOffRoadStyle = 'innawoods.settings.offRoadStyle';
   static const _kAutoHeadingUp = 'innawoods.settings.autoHeadingUp';
+  static const _kSearchLimit = 'innawoods.settings.searchLimitToRegion';
 
   Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -113,6 +123,7 @@ class SettingsStore {
       tripMode: prefs.getBool(_kTripMode) ?? false,
       offRoadStyle: prefs.getBool(_kOffRoadStyle) ?? false,
       autoHeadingUp: prefs.getBool(_kAutoHeadingUp) ?? true,
+      searchLimitToRegion: prefs.getBool(_kSearchLimit) ?? false,
     );
   }
 
@@ -128,5 +139,6 @@ class SettingsStore {
     await prefs.setBool(_kTripMode, s.tripMode);
     await prefs.setBool(_kOffRoadStyle, s.offRoadStyle);
     await prefs.setBool(_kAutoHeadingUp, s.autoHeadingUp);
+    await prefs.setBool(_kSearchLimit, s.searchLimitToRegion);
   }
 }
