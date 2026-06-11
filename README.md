@@ -1,4 +1,4 @@
-# innawoods
+# Innawoods: Backcountry
 
 Privacy-first real-time group coordination & mapping for off-grid crews —
 riders, hunters, anyone who heads out with a party and wants to see each other
@@ -6,6 +6,12 @@ on a map without being tracked by anyone else.
 
 **Privacy above everything.** The server stores only encrypted blobs. It never
 holds the keys, so it never sees a coordinate, a pin, a route, or a message.
+
+> **Source-available + on-store.** This repo *is* the app. The exact same code
+> ships on the iOS App Store and Google Play as **Innawoods: Backcountry**. If
+> you'd rather not build it yourself, install from a store. If you'd rather
+> trust nothing but what you compile, build from here. Both paths are
+> first-class — the licensing model assumes both.
 
 ---
 
@@ -29,33 +35,55 @@ looks the party up by `CODE`, then derives the group key locally from `SECRET`.
 RLS on Supabase is **access control only** (who may read which rows), never
 content inspection — content is opaque ciphertext.
 
-## Status — Phase 1 complete ✅
+## Status
 
-- [x] Supabase schema + RLS policies + lifecycle RPCs (`supabase/migrations/`)
-- [x] X25519 identity key generation + secure storage
-- [x] Group-key derivation + XChaCha20-Poly1305 payload sealing (`lib/core/crypto/`)
-- [x] Verified end-to-end: encrypt → store → read-back-as-ciphertext → decrypt,
-      plus RLS enforcement and ephemeral self-destruct
+Rough-draft feature-complete, in App Store TestFlight + Play Closed Testing.
 
-Next: Phase 2 (party UI + invite/join flow), then the map (Phase 3).
+- End-to-end encrypted realtime party (locations, pins, routes, chat)
+- Anonymous Supabase auth — no email, phone, or password ever asked
+- Offline vector basemaps via PMTiles + MapLibre, per-region downloads
+- Background tracking + recorded tracks
+- Meshtastic LoRa bridge for cell-dead operation
+- FCM party-invite push, dead-man switch in progress
 
-## Running
+## Building from source
+
+If you want to compile the app yourself instead of installing from a store:
 
 ```bash
 flutter pub get
-flutter test                      # crypto + widget tests (no backend needed)
-
-# End-to-end verification against a Supabase instance:
-supabase start                    # local stack (Docker), applies migrations
-dart run tool/verify_e2e.dart \
-  --url  http://127.0.0.1:54321 \
-  --anon <publishable/anon key from `supabase status`>
-
-# The app reads backend config from --dart-define:
-flutter run \
-  --dart-define=SUPABASE_URL=https://<project>.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=<anon key>
+dart run build_runner build --delete-conflicting-outputs
+flutter test                # crypto + widget tests, no backend needed
 ```
+
+The store builds point at a Supabase project I run. **Don't ship a binary
+pointed at my URL** — host your own:
+
+1. Create a Supabase project at <https://supabase.com>.
+2. Apply migrations: `supabase db push` against your project, or copy the SQL
+   files in `supabase/migrations/` manually.
+3. Build with your own `--dart-define`:
+
+   ```bash
+   flutter run --release \
+     --dart-define=SUPABASE_URL=https://<your-project>.supabase.co \
+     --dart-define=SUPABASE_ANON_KEY=<your-anon-key>
+   ```
+
+End-to-end verification against a local Supabase stack:
+
+```bash
+supabase start                # Docker; applies migrations
+dart run tool/verify_e2e.dart \
+  --url http://127.0.0.1:54321 \
+  --anon <publishable key from `supabase status`>
+```
+
+Android release signing wants your own keystore (`keytool -genkeypair -v
+-keystore innawoods.jks -keyalg RSA -keysize 4096 -alias innawoods` and a
+matching `android/key.properties`). iOS release signing wants an Apple
+Developer account. `codemagic.yaml` documents the full CI release pipeline I
+use, including the env-var groups and integrations it expects.
 
 ## Map regions (offline)
 
@@ -64,40 +92,40 @@ in-app **region download manager** (Settings → Map → Downloaded regions, or
 `/maps`) lists supported regions; users tap to download a `.pmtiles` file from
 the URL declared in `lib/shared/services/region_catalog.dart`.
 
-There is **no public per-state PMTiles CDN**. You host the `.pmtiles` files
-yourself (S3, R2, a GitHub release asset, etc.) and put those URLs in the
-catalog. Build a region with the [`pmtiles extract`](https://docs.protomaps.com/pmtiles/cli)
+There is **no public per-state PMTiles CDN**. The store build pulls regions
+from this repo's GitHub releases. If you fork, host the `.pmtiles` files
+wherever you want (S3, R2, your own release page) and update the catalog. Build
+a region with the [`pmtiles extract`](https://docs.protomaps.com/pmtiles/cli)
 CLI + a bounding-box GeoJSON, against a Protomaps daily dump.
 
 Glyphs (fonts), sprite (icons), and the MapLibre runtime are bundled in the APK
 so the map works offline once a region is downloaded. Terrain DEM is currently
-fetched live from AWS Terrarium — bundling it per-region is the open
-follow-on for fully-offline 3D.
+fetched live from AWS Terrarium — bundling it per-region is the open follow-on
+for fully-offline 3D.
 
-## iOS / TestFlight via Codemagic
+## License
 
-`codemagic.yaml` at the repo root defines an `ios` workflow that builds the
-`.ipa` and ships it to TestFlight. Before the first build:
+**AGPL-3.0-or-later.** See [`LICENSE`](LICENSE).
 
-1. **App Store Connect:** create an app record with bundle id
-   `com.innawoods.innawoods`. Copy its numeric App ID into the workflow's
-   `APP_STORE_APPLE_ID` env var.
-2. **Codemagic integrations:** add an App Store Connect API key under the name
-   `app-store-connect` (matches the `integrations:` block).
-3. **Codemagic env-var group:** create one named `supabase-prod` with
-   `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
-4. Connect the repo to Codemagic and push to `main`.
+Plain language: you're free to use, study, modify, distribute, and self-host
+this. If you ship a modified version — *including running it as a service that
+users interact with over a network* — you must publish your changes under AGPL
+too. This is the same license Signal and Element use, for the same reason:
+privacy software's promises only hold up when users (or someone they trust)
+can read the source.
 
-The Android workflow in the same file produces a release APK from every push
-to `main`, using the same Supabase env group.
+Copyright © 2026 Caravan Electric, LLC.
 
 ## Layout
 
 ```
-lib/core/crypto/     identity keys, group key, AEAD, invite encoding
-lib/core/config/     build-time Supabase config (--dart-define)
-lib/core/theme/      dark earth-tone theme
-supabase/migrations/ schema, RLS, RPCs, realtime, purge
-tool/verify_e2e.dart end-to-end privacy proof
-test/crypto/         crypto unit tests (incl. zero-plaintext + tamper)
+lib/core/           crypto, config (--dart-define), router, theme
+lib/features/       auth, party, map, maps, mesh, tracks, settings, onboarding
+lib/shared/         services (region downloader, tile server, mesh, …), models, widgets
+supabase/migrations/  schema, RLS, RPCs, realtime, purge
+tool/verify_e2e.dart  end-to-end privacy proof
+test/crypto/        crypto unit tests (incl. zero-plaintext + tamper)
+docs/               privacy policy, support page, store assets (HTML mirrors of the gists)
+android/, ios/      platform projects
+codemagic.yaml      CI release pipeline (TestFlight + Play Internal)
 ```
