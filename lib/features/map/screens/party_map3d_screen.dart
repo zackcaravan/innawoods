@@ -369,6 +369,30 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     await _eval('$fn(${jsonEncode(data)})');
   }
 
+  /// Fly the camera to a single point (used by drawer pin taps + the search
+  /// result list). Picks a moderate zoom so the user sees context, not a
+  /// pixel-sniff close-up.
+  Future<void> _flyToPoint(LatLng pt, {double zoom = 14}) =>
+      _eval('flyTo(${pt.longitude},${pt.latitude},$zoom)');
+
+  /// Frame an entire route in the viewport (used by drawer route taps).
+  /// Falls back to flyToPoint for trivially short routes.
+  Future<void> _flyToRoute(MapRoute r) async {
+    if (r.points.isEmpty) return;
+    if (r.points.length == 1) return _flyToPoint(r.points.first);
+    var minLng = r.points.first.longitude;
+    var maxLng = minLng;
+    var minLat = r.points.first.latitude;
+    var maxLat = minLat;
+    for (final p in r.points) {
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+    }
+    await _eval('fitBounds($minLng, $minLat, $maxLng, $maxLat)');
+  }
+
   void _pushAll() {
     if (!mounted) return;
     _push('setMembers', _membersGeo(_members));
@@ -376,6 +400,31 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     _push('setRoutes', _routesGeo(_routes));
     _push('setRouteWaypoints', _waypointsGeo(_waypoints));
     _pushOverlays();
+    _pushMaxBounds();
+  }
+
+  /// Clamp panning to the active region's bbox plus a small buffer so the
+  /// user can't silently wander into ungloaded continents (which would
+  /// trigger live DEM streaming and drain battery for terrain they have no
+  /// vector data behind). 0.5° on each side ≈ 35-55 km depending on
+  /// latitude — enough breathing room for trails that cross state lines,
+  /// not enough to download Idaho by accident.
+  void _pushMaxBounds() {
+    if (!_ready) return;
+    final activeId = ref.read(activeRegionProvider).valueOrNull;
+    if (activeId == null) {
+      _eval('clearMaxBounds()');
+      return;
+    }
+    final region = ref.read(regionCatalogProvider).byId(activeId);
+    if (region == null) {
+      _eval('clearMaxBounds()');
+      return;
+    }
+    const buf = 0.5;
+    final b = region.bbox;
+    _eval('setMaxBounds(${b[0] - buf}, ${b[1] - buf}, '
+        '${b[2] + buf}, ${b[3] + buf})');
   }
 
   List<MemberPosition> get _members =>
@@ -1120,7 +1169,15 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       builder: (_) => _SearchSheet(
-        onSearch: (q) => ref.read(geocoderServiceProvider).search(q),
+        // Bias search toward where the user is currently looking. Photon
+        // ranks results by distance to (lat, lon) when provided, so a query
+        // like "Salmon Creek" prefers the Salmon Creek 20 mi from the
+        // viewport over the one in Maine. The user isn't locked out of
+        // distant matches — they just rank below nearby ones.
+        onSearch: (q) => ref.read(geocoderServiceProvider).search(
+              q,
+              near: LatLng(_camera.value.lat, _camera.value.lng),
+            ),
         onNearby: _nearbyPois,
       ),
     );
@@ -1420,6 +1477,12 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       if (!mounted) return;
       final live = next.valueOrNull;
       _push('setTrack', _trackGeo(live?.points ?? const []));
+    });
+    ref.listen(activeRegionProvider, (_, _) {
+      // Region switched (e.g. user downloaded MT, set it active) — refresh
+      // the pan lock so they can immediately use the new region without
+      // having to restart the screen.
+      if (mounted) _pushMaxBounds();
     });
     ref.listen(partyMessagesProvider(widget.partyId), (_, next) {
       if (!mounted) return;
@@ -1831,7 +1894,12 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
               onSave: _drawnLine.length < 2 ? null : _saveRoute,
             )
           else
-            _RosterSheet(partyId: widget.partyId, party: party),
+            _RosterSheet(
+              partyId: widget.partyId,
+              party: party,
+              onFlyToPoint: _flyToPoint,
+              onFlyToRoute: _flyToRoute,
+            ),
         ],
       ),
     );
@@ -1842,9 +1910,20 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
 // Bottom sheet: roster + pins + routes + actions
 // ===========================================================================
 class _RosterSheet extends ConsumerWidget {
-  const _RosterSheet({required this.partyId, this.party});
+  const _RosterSheet({
+    required this.partyId,
+    this.party,
+    required this.onFlyToPoint,
+    required this.onFlyToRoute,
+  });
   final String partyId;
   final Party? party;
+
+  /// Fly the camera to a single coordinate (pin taps, etc.).
+  final Future<void> Function(LatLng) onFlyToPoint;
+
+  /// Fit a route's full extent into the viewport.
+  final Future<void> Function(MapRoute) onFlyToRoute;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1898,6 +1977,9 @@ class _RosterSheet extends ConsumerWidget {
                 contentPadding: EdgeInsets.zero, dense: true,
                 leading: Icon(PinType.fromId(pin.type).icon, color: AppTheme.amber),
                 title: Text(pin.name), subtitle: Text(PinType.fromId(pin.type).label),
+                // Tap a pin in the list → fly the camera to it. The sheet
+                // stays where the user has it; they can drag it down to see.
+                onTap: () => onFlyToPoint(pin.location),
               ),
             const SizedBox(height: 12),
             Text('Routes (${routes.length})', style: Theme.of(context).textTheme.titleMedium),
@@ -1908,6 +1990,10 @@ class _RosterSheet extends ConsumerWidget {
                 contentPadding: EdgeInsets.zero, dense: true,
                 leading: const Icon(Icons.route, color: AppTheme.amber),
                 title: Text(r.name), subtitle: Text('${r.points.length} points'),
+                // Tap a route in the list → frame the whole route in the
+                // viewport. fitBounds in the helper handles single-point
+                // routes gracefully.
+                onTap: () => onFlyToRoute(r),
                 trailing: IconButton(
                   icon: const Icon(Icons.download, size: 20),
                   onPressed: () => _exportRoute(ref, r),

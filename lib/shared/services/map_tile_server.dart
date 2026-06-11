@@ -40,6 +40,21 @@ class MapTileServer {
   final LinkedHashMap<String, List<int>> _demCache = LinkedHashMap();
   static const _demCacheMax = 256;
 
+  // On-disk DEM cache bounds. ~1000 tiles × ~100 KB ≈ 100 MB — big enough for
+  // a statewide trip's worth of panning plus a prefetched region, small enough
+  // to not pile up indefinitely on cheap devices. Eviction prunes down to
+  // `_demDiskTarget` so the sweep doesn't run on every single write once we're
+  // at the cap. LRU is by file mtime: reads touch the tile so popular ones
+  // stay hot, panning tiles age out first. If the user previously prefetched
+  // a region for offline use and then panned enough to age those tiles out,
+  // re-prefetching is the recovery path — documented in the maps screen.
+  static const _demDiskMax = 1000;
+  static const _demDiskTarget = 800;
+
+  // Cached file count to avoid scanning the directory on every write. -1
+  // means "not yet counted from disk"; populated lazily on first write.
+  int _demDiskCount = -1;
+
   Future<int> start() async {
     _server = await shelf_io.serve(
       _handler,
@@ -147,6 +162,12 @@ class MapTileServer {
       try {
         final bytes = await diskFile.readAsBytes();
         _admitToMemory(coords, bytes);
+        // Touch mtime so LRU eviction sees this as "recently used" and
+        // doesn't roll out a tile we just served. Best-effort — if the FS
+        // refuses, the eviction order is just slightly stale, not wrong.
+        try {
+          diskFile.setLastModifiedSync(DateTime.now());
+        } catch (_) {/* non-fatal */}
         return Response.ok(bytes, headers: demHeaders);
       } catch (_) {
         // Corrupt cache entry — fall through to network.
@@ -187,8 +208,60 @@ class MapTileServer {
     try {
       await f.parent.create(recursive: true);
       await f.writeAsBytes(bytes, flush: false);
+      // Maintain the LRU bound. Cheap most of the time (just counter++),
+      // pays the full scan/sort only when we actually need to evict.
+      unawaited(_maybeEvictDisk());
     } catch (_) {
       // Best-effort — disk full / permission issues are non-fatal.
+    }
+  }
+
+  /// Trim the on-disk DEM cache to [_demDiskTarget] when it grows past
+  /// [_demDiskMax]. Counts files lazily on the first call after construction
+  /// (so we don't list the directory at startup), then runs the actual
+  /// sort-and-delete sweep only when the cap is breached.
+  Future<void> _maybeEvictDisk() async {
+    final dir = demCacheDir;
+    if (dir == null || !dir.existsSync()) return;
+    if (_demDiskCount < 0) {
+      // Cold-start: count files once, lazily.
+      try {
+        _demDiskCount =
+            dir.listSync(recursive: false).whereType<File>().length;
+      } catch (_) {
+        _demDiskCount = 0;
+      }
+    }
+    _demDiskCount++;
+    if (_demDiskCount <= _demDiskMax) return;
+    try {
+      final files = dir.listSync(recursive: false).whereType<File>().toList();
+      // Stat each once and sort oldest first. O(N log N) where N ≈ 1000 →
+      // a few ms even on cheap devices, and only runs once per ~200 writes
+      // (max - target) once the cache is full.
+      final stamped = [
+        for (final f in files)
+          (f, () {
+            try {
+              return f.statSync().modified;
+            } catch (_) {
+              return DateTime.fromMillisecondsSinceEpoch(0);
+            }
+          }())
+      ];
+      stamped.sort((a, b) => a.$2.compareTo(b.$2));
+      final toDelete = files.length - _demDiskTarget;
+      var deleted = 0;
+      for (var i = 0; i < toDelete && i < stamped.length; i++) {
+        try {
+          stamped[i].$1.deleteSync();
+          deleted++;
+        } catch (_) {/* keep going on individual failures */}
+      }
+      _demDiskCount = files.length - deleted;
+    } catch (_) {
+      // Listing/eviction is best-effort; failing here just delays cleanup
+      // until the next write triggers another attempt.
     }
   }
 

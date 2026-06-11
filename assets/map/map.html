@@ -814,6 +814,16 @@
         window.setSearch = (gj) => { const s = map.getSource('search'); if (s) s.setData(gj); };
         window.getCenter = () => { const c = map.getCenter(); return JSON.stringify({ lng: c.lng, lat: c.lat }); };
 
+        // Constrain panning to a bbox. Used to keep the user inside the
+        // downloaded region so we don't silently stream global DEM tiles.
+        // null clears the lock (e.g. when the user explicitly wants to
+        // scout further). MapLibre snaps the camera back inside the bbox
+        // on the next user interaction if they were already outside.
+        window.setMaxBounds = (minLng, minLat, maxLng, maxLat) => {
+          map.setMaxBounds([[minLng, minLat], [maxLng, maxLat]]);
+        };
+        window.clearMaxBounds = () => { map.setMaxBounds(null); };
+
         // Off-grid-useful POI categories. Maps Protomaps `kind` strings to a
         // grouped human-readable label (and an emoji marker, picked up by the
         // Flutter side for visual distinction).
