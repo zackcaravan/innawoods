@@ -5,6 +5,31 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'coord_format.dart';
 
+/// Which trail-style filter the map is currently showing. Used to mute
+/// motorised ways when you're hiking and the other way around.
+///
+/// `all` is the default and renders every classified path/track. The other
+/// modes hide the irrelevant layer (`orv` hides hike paths, `hike` hides
+/// motorised tracks). Major roads, bridges, and tunnels stay visible in
+/// every mode — you always want to see where the highway is.
+///
+/// Filtering accuracy depends on which OSM attributes the active region's
+/// pmtiles preserved. Today's extract only keeps `kind` ∈ {path, other},
+/// which catches most cases but isn't surface-aware; a future rebuild
+/// (`kind_detail` + `surface`) will tighten this.
+enum MapActivity {
+  all('all', 'All trails'),
+  hike('hike', 'Hike only'),
+  orv('orv', 'ORV / track only');
+
+  const MapActivity(this.id, this.label);
+  final String id;
+  final String label;
+
+  static MapActivity fromId(String? id) =>
+      MapActivity.values.firstWhere((a) => a.id == id, orElse: () => all);
+}
+
 /// User-tunable settings (battery + safety). Persisted locally.
 class AppSettings {
   const AppSettings({
@@ -19,6 +44,7 @@ class AppSettings {
     this.offRoadStyle = false,
     this.autoHeadingUp = true,
     this.searchLimitToRegion = false,
+    this.mapActivity = MapActivity.all,
   });
 
   /// How often to publish your position. 30 s default; up to 5 min to save battery.
@@ -63,6 +89,9 @@ class AppSettings {
   /// going to be in WA, stop showing me Salmon Creek in Maine."
   final bool searchLimitToRegion;
 
+  /// Trail-style filter — see [MapActivity]. Default `all` (no filter).
+  final MapActivity mapActivity;
+
   /// Effective location-publish interval (in seconds) accounting for trip mode.
   int get effectiveLocationIntervalSeconds =>
       tripMode ? 90 : locationIntervalSeconds;
@@ -79,6 +108,7 @@ class AppSettings {
     bool? offRoadStyle,
     bool? autoHeadingUp,
     bool? searchLimitToRegion,
+    MapActivity? mapActivity,
   }) =>
       AppSettings(
         locationIntervalSeconds:
@@ -93,6 +123,7 @@ class AppSettings {
         offRoadStyle: offRoadStyle ?? this.offRoadStyle,
         autoHeadingUp: autoHeadingUp ?? this.autoHeadingUp,
         searchLimitToRegion: searchLimitToRegion ?? this.searchLimitToRegion,
+        mapActivity: mapActivity ?? this.mapActivity,
       );
 }
 
@@ -108,6 +139,7 @@ class SettingsStore {
   static const _kOffRoadStyle = 'innawoods.settings.offRoadStyle';
   static const _kAutoHeadingUp = 'innawoods.settings.autoHeadingUp';
   static const _kSearchLimit = 'innawoods.settings.searchLimitToRegion';
+  static const _kMapActivity = 'innawoods.settings.mapActivity';
 
   Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -124,6 +156,7 @@ class SettingsStore {
       offRoadStyle: prefs.getBool(_kOffRoadStyle) ?? false,
       autoHeadingUp: prefs.getBool(_kAutoHeadingUp) ?? true,
       searchLimitToRegion: prefs.getBool(_kSearchLimit) ?? false,
+      mapActivity: MapActivity.fromId(prefs.getString(_kMapActivity)),
     );
   }
 
@@ -140,5 +173,6 @@ class SettingsStore {
     await prefs.setBool(_kOffRoadStyle, s.offRoadStyle);
     await prefs.setBool(_kAutoHeadingUp, s.autoHeadingUp);
     await prefs.setBool(_kSearchLimit, s.searchLimitToRegion);
+    await prefs.setString(_kMapActivity, s.mapActivity.id);
   }
 }

@@ -160,8 +160,9 @@ class _Body extends ConsumerWidget {
               controller.save(settings.copyWith(tripMode: v)),
           title: const Text('Trip mode (battery saver)'),
           subtitle: const Text(
-              'Forces location updates to every 90 s, regardless of the '
-              'battery slider. Shows a TRIP badge on the map while on.'),
+              'Position updates every 90 s, lower-accuracy GPS, 3D tilt + '
+              'relief shading off. Use for multi-hour trips where battery '
+              'matters more than a smooth 5 m dot.'),
           secondary: const Icon(Icons.eco_outlined),
         ),
         SwitchListTile(

@@ -315,6 +315,22 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     if (_currentSettings?.offRoadStyle == true) {
       _eval('setOffRoadStyle(true)');
     }
+    if (_currentSettings?.tripMode == true) {
+      // Trip mode persists across screen restarts — re-apply the GPU-cost
+      // suppression on every map open so the user doesn't have to toggle
+      // trip-mode off-and-on to get the hillshade hidden again.
+      _eval('setHillshade(false)');
+    }
+    _pushActivityFilter();
+  }
+
+  /// Push the user's trail-style filter (all / hike / orv) to the map. The JS
+  /// side toggles layer visibility on the split `roads_hike` / `roads_orv`
+  /// layers — major roads, bridges, tunnels stay visible regardless.
+  void _pushActivityFilter() {
+    if (!_ready) return;
+    final a = _currentSettings?.mapActivity ?? MapActivity.all;
+    _eval('setActivityFilter(${jsonEncode(a.id)})');
   }
 
   Future<void> _boot() async {
@@ -611,6 +627,27 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
           Navigator.of(context).pop();
           _appendTrailToDraft(coords);
         },
+        // "Add whole trail" is offered only when we have an OSM name to
+        // stitch by. queryTrailByName + assembly happens on demand so we
+        // don't pre-compute a chain the user may not want.
+        onAddWholeTrail: info.name.isEmpty
+            ? null
+            : () async {
+                final whole = await _assembleNamedTrail(info.name, info.tap);
+                if (!mounted) return;
+                Navigator.of(context).pop();
+                if (whole == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          'Couldn\'t find more segments of "${info.name}" '
+                          'in the current view.'),
+                    ),
+                  );
+                  return;
+                }
+                _appendTrailToDraft(whole);
+              },
       ),
     );
   }
@@ -633,6 +670,96 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       _draft.add(trail.last);
     });
     _push('setDraft', _draftGeo());
+  }
+
+  /// Find every rendered segment with the same OSM `name` and stitch them
+  /// into one polyline. Protomaps fragments long ways at tile boundaries;
+  /// this assembles the user-perceived trail back together by chaining
+  /// segments head-to-tail. The first segment is the one whose endpoint is
+  /// closest to [seedNear] (the user's tap point); each subsequent segment
+  /// is the unattached one whose endpoint best matches the chain's tail.
+  /// Returns null if [name] is empty or no segments are found.
+  Future<List<LatLng>?> _assembleNamedTrail(
+    String name,
+    LatLng seedNear,
+  ) async {
+    if (name.isEmpty) return null;
+    final raw = await _eval('queryTrailByName(${jsonEncode(name)})');
+    if (raw == null) return null;
+    final List<dynamic> list;
+    try {
+      list = jsonDecode(raw) as List;
+    } catch (_) {
+      return null;
+    }
+    if (list.isEmpty) return null;
+
+    // Parse each LineString into a List<LatLng>.
+    final segs = <List<LatLng>>[];
+    for (final s in list) {
+      if (s is! List) continue;
+      final pts = <LatLng>[
+        for (final c in s)
+          if (c is List && c.length >= 2)
+            LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble()),
+      ];
+      if (pts.length >= 2) segs.add(pts);
+    }
+    if (segs.isEmpty) return null;
+
+    // Pick the seed segment: whichever endpoint of any segment is closest to
+    // the user's tap. Orient it so the closest endpoint is at the head, so
+    // the chain grows outward from where they tapped.
+    const dist = Distance();
+    double seedDist = double.infinity;
+    int seedIdx = 0;
+    bool seedReverse = false;
+    for (var i = 0; i < segs.length; i++) {
+      final dHead = dist.as(LengthUnit.Meter, seedNear, segs[i].first);
+      final dTail = dist.as(LengthUnit.Meter, seedNear, segs[i].last);
+      if (dHead < seedDist) {
+        seedDist = dHead;
+        seedIdx = i;
+        seedReverse = false;
+      }
+      if (dTail < seedDist) {
+        seedDist = dTail;
+        seedIdx = i;
+        seedReverse = true;
+      }
+    }
+    final chain = List<LatLng>.of(
+        seedReverse ? segs[seedIdx].reversed : segs[seedIdx]);
+    final used = <int>{seedIdx};
+
+    // Grow the chain by repeatedly finding the unused segment whose nearer
+    // endpoint matches the chain's tail within 5 m. The 5 m epsilon
+    // tolerates the floating-point jitter at tile-boundary splits without
+    // welding disconnected ways that just happen to share a name.
+    const eps = 5.0;
+    var grew = true;
+    while (grew) {
+      grew = false;
+      final tail = chain.last;
+      for (var i = 0; i < segs.length; i++) {
+        if (used.contains(i)) continue;
+        final dHead = dist.as(LengthUnit.Meter, tail, segs[i].first);
+        final dTail = dist.as(LengthUnit.Meter, tail, segs[i].last);
+        if (dHead <= eps) {
+          chain.addAll(segs[i].skip(1)); // skip the shared point
+          used.add(i);
+          grew = true;
+          break;
+        }
+        if (dTail <= eps) {
+          chain.addAll(segs[i].reversed.skip(1));
+          used.add(i);
+          grew = true;
+          break;
+        }
+      }
+    }
+    return chain.length >= 2 ? chain : null;
   }
 
   Future<void> _dropWaypointAt(String routeId, LatLng point) async {
@@ -1402,6 +1529,62 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                     subtitle: const Text(
                         'Mute highways, bolden trails, stronger hillshade.'),
                   ),
+                  // Activity-based trail filter. Filters only the path/track
+                  // layers — major roads always visible. Distinct visual
+                  // styling (green vs amber dashes) means even in "All" mode
+                  // you can tell paths from forest tracks at a glance.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Show trails',
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white70)),
+                          const SizedBox(height: 8),
+                          SegmentedButton<MapActivity>(
+                            segments: const [
+                              ButtonSegment(
+                                  value: MapActivity.all,
+                                  label: Text('All'),
+                                  icon: Icon(Icons.alt_route, size: 16)),
+                              ButtonSegment(
+                                  value: MapActivity.hike,
+                                  label: Text('Hike'),
+                                  icon: Icon(Icons.hiking, size: 16)),
+                              ButtonSegment(
+                                  value: MapActivity.orv,
+                                  label: Text('ORV'),
+                                  icon: Icon(Icons.terrain, size: 16)),
+                            ],
+                            selected: {
+                              _currentSettings?.mapActivity ?? MapActivity.all
+                            },
+                            onSelectionChanged: (selection) async {
+                              final s = _currentSettings;
+                              if (s == null || selection.isEmpty) return;
+                              await ref
+                                  .read(settingsControllerProvider.notifier)
+                                  .save(s.copyWith(
+                                      mapActivity: selection.first));
+                              setSheet(() {});
+                            },
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Hike paths render green dashes; ORV tracks '
+                            'render amber. Major roads always visible.',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.white54),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                   const Divider(height: 16),
                   header('Tools'),
                   ListTile(
@@ -1540,6 +1723,30 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       // Off-road style is reversible JS — re-apply on every change.
       if (before?.offRoadStyle != _currentSettings?.offRoadStyle) {
         _eval('setOffRoadStyle(${_currentSettings?.offRoadStyle == true})');
+      }
+      // Activity filter (hike / ORV / all) — push only when it actually
+      // changes so we don't churn layer-visibility ops on every settings
+      // notify.
+      if (before?.mapActivity != _currentSettings?.mapActivity) {
+        _pushActivityFilter();
+      }
+      // Trip mode → kill the GPU-expensive bits when entering, restore on
+      // exit. The big costs: (a) 3D tilt continuously rendering the DEM
+      // terrain mesh, (b) the always-on hillshade layer sampling DEM tiles
+      // and shading every fill. Both off → 2x-ish frame-time win, which
+      // adds up over a multi-hour trip.
+      if (before?.tripMode != _currentSettings?.tripMode) {
+        final on = _currentSettings?.tripMode == true;
+        if (on) {
+          if (_is3d) {
+            setState(() => _is3d = false);
+            _eval('setMode(false)');
+          }
+          _eval('setHillshade(false)');
+        } else {
+          _eval('setHillshade(true)');
+          // Leave 3D off on exit — user re-tilts manually if they want it.
+        }
       }
       // If the user just disabled auto-heads-up while we're currently
       // engaged, snap back to north so the map doesn't stay rotated.
@@ -4140,12 +4347,19 @@ class _TrailInfoSheet extends StatefulWidget {
     required this.baseUrl,
     required this.canAddToRoute,
     required this.onAddToRoute,
+    this.onAddWholeTrail,
   });
 
   final _TrailHitInfo info;
   final String baseUrl;
   final bool canAddToRoute;
+
+  /// Append just the visible segment under the user's finger.
   final VoidCallback onAddToRoute;
+
+  /// Append every connected segment that shares this trail's OSM name. Null
+  /// when the trail has no name (no way to find related segments).
+  final VoidCallback? onAddWholeTrail;
 
   @override
   State<_TrailInfoSheet> createState() => _TrailInfoSheetState();
@@ -4259,18 +4473,33 @@ class _TrailInfoSheetState extends State<_TrailInfoSheet> {
               child: FilledButton.icon(
                 onPressed: widget.onAddToRoute,
                 icon: const Icon(Icons.add_road),
-                label: const Text('Add to route'),
+                label: const Text('Add segment to route'),
                 style: FilledButton.styleFrom(
                   backgroundColor: AppTheme.amber,
                   foregroundColor: Colors.black,
                 ),
               ),
             ),
+            if (widget.onAddWholeTrail != null) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: widget.onAddWholeTrail,
+                  icon: const Icon(Icons.linear_scale),
+                  label: Text('Add whole "${info.name}"'),
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
-            const Text(
-              'Splices this visible trail segment into your draft. '
-              'Tap successive trails to chain them.',
-              style: TextStyle(color: Colors.white54, fontSize: 11),
+            Text(
+              widget.onAddWholeTrail != null
+                  ? 'Segment = just the part under your finger. Whole = '
+                      'every connected piece of this named trail visible '
+                      'in the current view.'
+                  : 'Splices this visible trail segment into your draft. '
+                      'Tap successive trails to chain them.',
+              style: const TextStyle(color: Colors.white54, fontSize: 11),
             ),
           ],
         ],

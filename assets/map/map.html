@@ -733,6 +733,44 @@
           map.setTerrain(is3d ? { source: 'demT', exaggeration: demExag } : null);
           map.easeTo({ pitch: is3d ? 55 : 0, duration: 600 });
         };
+        // Toggle the always-on relief shading. Trip-mode suppresses it to
+        // save GPU + DEM-fetch battery; user-driven 3D still works (the 3D
+        // tilt uses a separate `demT` source that's loaded on demand).
+        window.setHillshade = (on) => {
+          if (map.getLayer('hillshade')) {
+            map.setLayoutProperty('hillshade', 'visibility',
+              on ? 'visible' : 'none');
+          }
+        };
+
+        // Find every rendered trail/road segment whose `name` matches the
+        // given string. Returns a JSON array of LineStrings (each is an
+        // array of [lng,lat]). Used by the trail info sheet's
+        // "Add whole trail" action: a Protomaps trail is fragmented into
+        // multiple features across tile boundaries, so we collect them and
+        // let Dart chain them by endpoint proximity. Limited to the layers
+        // that surface the `roads` source-layer — major roads, trails,
+        // bridges, tunnels. Skipped if `name` is empty.
+        window.queryTrailByName = (name) => {
+          if (!name) return JSON.stringify([]);
+          const trailLayers = [
+            'roads_hike', 'roads_orv', 'roads_other',
+            'roads_bridges_other', 'roads_tunnels_other',
+          ].filter(id => !!map.getLayer(id));
+          if (!trailLayers.length) return JSON.stringify([]);
+          const hits = map.queryRenderedFeatures({ layers: trailLayers });
+          const out = [];
+          for (const f of hits) {
+            const fname = (f.properties && f.properties.name) || '';
+            if (fname !== name) continue;
+            if (f.geometry.type === 'LineString') {
+              out.push(f.geometry.coordinates);
+            } else if (f.geometry.type === 'MultiLineString') {
+              for (const c of f.geometry.coordinates) out.push(c);
+            }
+          }
+          return JSON.stringify(out);
+        };
         // Toggle a named overlay layer on/off (driven by the layers sheet).
         window.setOverlay = (id, visible) => {
           // Wildfires has TWO layers behind the single id 'wildfires'.
@@ -823,6 +861,35 @@
           map.setMaxBounds([[minLng, minLat], [maxLng, maxLat]]);
         };
         window.clearMaxBounds = () => { map.setMaxBounds(null); };
+
+        // Show only hike trails / only ORV tracks / both. Mode strings:
+        //   'all'  → both layers visible (default)
+        //   'hike' → ORV layer hidden
+        //   'orv'  → hike layer hidden
+        // Hides legacy `roads_other` when filtering, since its filter
+        // covers both kinds and would defeat the split. Major roads,
+        // bridges, and tunnels are unaffected — you always want to see
+        // where the highway is regardless of your activity.
+        window.setActivityFilter = (mode) => {
+          const vis = (id, on) => {
+            if (map.getLayer(id)) {
+              map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+            }
+          };
+          if (mode === 'hike') {
+            vis('roads_hike', true);
+            vis('roads_orv', false);
+            vis('roads_other', false);
+          } else if (mode === 'orv') {
+            vis('roads_hike', false);
+            vis('roads_orv', true);
+            vis('roads_other', false);
+          } else { // 'all' or anything else
+            vis('roads_hike', true);
+            vis('roads_orv', true);
+            vis('roads_other', true);
+          }
+        };
 
         // Off-grid-useful POI categories. Maps Protomaps `kind` strings to a
         // grouped human-readable label (and an emoji marker, picked up by the
@@ -993,7 +1060,9 @@
           // (paths, tracks, unclassified ways and their bridge/tunnel variants)
           // so the user can tap any rendered trail and get its name + props.
           const trailLayers = [
-            'roads_other',
+            'roads_hike',
+            'roads_orv',
+            'roads_other',          // legacy: pre-split tiles render through here
             'roads_bridges_other',
             'roads_tunnels_other',
           ].filter(id => !!map.getLayer(id));
