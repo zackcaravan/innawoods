@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// Thin wrapper over local notifications for crew alerts (dead-man's switch).

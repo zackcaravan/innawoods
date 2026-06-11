@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 /// A user profile as stored in `public.users`. No email, no phone — anonymous
 /// auth means the only identity is the auth uid + a published X25519 public key.
 class AppUser {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 import 'package:cryptography/cryptography.dart';
 
 import '../../core/crypto/crypto_service.dart';

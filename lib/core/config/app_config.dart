@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 /// App configuration, supplied at build time via --dart-define so secrets and
 /// environment URLs never get hard-coded into source.
 ///

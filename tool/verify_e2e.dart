@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 // End-to-end verification of the innawoods privacy model against a live
 // Supabase instance (local or hosted). It proves the core Phase-1 claim:
 //

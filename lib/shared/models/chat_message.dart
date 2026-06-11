@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 /// A decrypted chat message. Only `text` comes from the encrypted payload;
 /// callsign is resolved from the party roster.
 class ChatMessage {

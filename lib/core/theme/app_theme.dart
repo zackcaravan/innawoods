@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 import 'package:flutter/material.dart';
 
 /// Dark-first, muted earth-tone theme: readable around a fire or in glare,

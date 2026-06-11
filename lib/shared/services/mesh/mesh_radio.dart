@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 /// Meshtastic-firmware BLE radio service.
 ///
 /// Talks to ANY device flashed with Meshtastic — LilyGO T-Beam / T-Echo /

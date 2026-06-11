@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 import 'package:mgrs_dart/mgrs_dart.dart';
 
 /// User-selectable coordinate display formats.

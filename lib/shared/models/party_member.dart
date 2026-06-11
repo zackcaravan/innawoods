@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 /// A member of a party as stored in `public.party_members`.
 class PartyMember {
   const PartyMember({

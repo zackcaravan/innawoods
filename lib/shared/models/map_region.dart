@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Caravan Electric, LLC.
+
 /// A downloadable map region. The .pmtiles file holds the vector basemap for
 /// that area; the app reads it from internal storage when the region is active.
 class MapRegion {
