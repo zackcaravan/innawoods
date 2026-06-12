@@ -1590,8 +1590,73 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                   const Divider(height: 16),
                   header('Overlays'),
                   overlayTile('overlay-trails', Icons.alt_route,
-                      'Trails & tracks',
-                      'Paths + unpaved roads from the offline basemap.'),
+                      'Color trails by activity',
+                      'Hike paths green, ORV / forest tracks orange. '
+                      'Off = basemap colors.'),
+                  // Activity-based trail filter — only relevant when the
+                  // trails overlay above is ON, since that's what makes
+                  // the colored layers visible at all. When the overlay
+                  // is off, the chips still show but are visually muted
+                  // and inert, so the user can pre-select without having
+                  // to flip the toggle first.
+                  Builder(builder: (ctx) {
+                    final overlayOn = _overlays['overlay-trails'] ?? false;
+                    final chips = SegmentedButton<MapActivity>(
+                      segments: const [
+                        ButtonSegment(
+                            value: MapActivity.all,
+                            label: Text('All'),
+                            icon: Icon(Icons.alt_route, size: 16)),
+                        ButtonSegment(
+                            value: MapActivity.hike,
+                            label: Text('Hike'),
+                            icon: Icon(Icons.hiking, size: 16)),
+                        ButtonSegment(
+                            value: MapActivity.orv,
+                            label: Text('ORV'),
+                            icon: Icon(Icons.terrain, size: 16)),
+                      ],
+                      selected: {
+                        _currentSettings?.mapActivity ?? MapActivity.all
+                      },
+                      onSelectionChanged: overlayOn
+                          ? (selection) async {
+                              final s = _currentSettings;
+                              if (s == null || selection.isEmpty) return;
+                              await ref
+                                  .read(settingsControllerProvider.notifier)
+                                  .save(s.copyWith(
+                                      mapActivity: selection.first));
+                              setSheet(() {});
+                            }
+                          : null,
+                    );
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Opacity(
+                          opacity: overlayOn ? 1.0 : 0.4,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              chips,
+                              const SizedBox(height: 4),
+                              Text(
+                                overlayOn
+                                    ? 'OSM-classified: paths vs tracks. '
+                                        'Major roads always visible.'
+                                    : 'Turn on the overlay above to color '
+                                        'trails by activity.',
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.white54),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
                   overlayTile('usgs-topo', Icons.terrain, 'USGS Topo (overlay)',
                       'Translucent USGS topo on top of whatever\'s below.'),
                   overlayTile('blm-sma', Icons.public_outlined,
@@ -1616,62 +1681,6 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
                     title: const Text('Off-road style'),
                     subtitle: const Text(
                         'Mute highways, bolden trails, stronger hillshade.'),
-                  ),
-                  // Activity-based trail filter. Filters only the path/track
-                  // layers — major roads always visible. Distinct visual
-                  // styling (green vs amber dashes) means even in "All" mode
-                  // you can tell paths from forest tracks at a glance.
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Show trails',
-                              style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white70)),
-                          const SizedBox(height: 8),
-                          SegmentedButton<MapActivity>(
-                            segments: const [
-                              ButtonSegment(
-                                  value: MapActivity.all,
-                                  label: Text('All'),
-                                  icon: Icon(Icons.alt_route, size: 16)),
-                              ButtonSegment(
-                                  value: MapActivity.hike,
-                                  label: Text('Hike'),
-                                  icon: Icon(Icons.hiking, size: 16)),
-                              ButtonSegment(
-                                  value: MapActivity.orv,
-                                  label: Text('ORV'),
-                                  icon: Icon(Icons.terrain, size: 16)),
-                            ],
-                            selected: {
-                              _currentSettings?.mapActivity ?? MapActivity.all
-                            },
-                            onSelectionChanged: (selection) async {
-                              final s = _currentSettings;
-                              if (s == null || selection.isEmpty) return;
-                              await ref
-                                  .read(settingsControllerProvider.notifier)
-                                  .save(s.copyWith(
-                                      mapActivity: selection.first));
-                              setSheet(() {});
-                            },
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'Hike paths render green dashes; ORV tracks '
-                            'render amber. Major roads always visible.',
-                            style: TextStyle(
-                                fontSize: 11, color: Colors.white54),
-                          ),
-                        ],
-                      ),
-                    ),
                   ),
                   const Divider(height: 16),
                   header('Tools'),

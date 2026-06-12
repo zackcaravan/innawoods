@@ -714,14 +714,10 @@
               map.setPaintProperty(lid, 'line-color', _origPaint[lid].color);
             }
           }
-          // Trails overlay layer — make it thicker + brighter when on.
-          if (map.getLayer('overlay-trails')) {
-            map.setPaintProperty('overlay-trails', 'line-width', on
-                ? ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4, 17, 6]
-                : ['interpolate', ['linear'], ['zoom'], 10, 1.2, 14, 2.5, 17, 4]);
-            map.setPaintProperty('overlay-trails', 'line-color',
-                on ? '#ff3d00' : '#ff5722');
-          }
+          // (Was: rebrand the old overlay-trails layer here. That layer is
+          // now a noop — see comment near its addLayer. The off-road style
+          // doesn't need to do anything for trails; the colored split
+          // layers already provide the visual distinction the user wants.)
           // Boost hillshade for stronger relief. MapLibre clamps this to
           // [0, 1], so we max it out when the off-road style is on.
           if (map.getLayer('hillshade')) {
@@ -806,6 +802,13 @@
               }
             }
             if (visible) window.refreshWildfires();
+            return;
+          }
+          // Trails & tracks: redirect to setTrailsOverlay so the activity
+          // filter is respected (we don't want the old single-layer toggle
+          // here, since the colored split layers replaced overlay-trails).
+          if (id === 'overlay-trails') {
+            window.setTrailsOverlay(visible);
             return;
           }
           if (map.getLayer(id)) {
@@ -898,33 +901,56 @@
         };
         window.clearMaxBounds = () => { map.setMaxBounds(null); };
 
-        // Show only hike trails / only ORV tracks / both. Mode strings:
-        //   'all'  → both layers visible (default)
-        //   'hike' → ORV layer hidden
-        //   'orv'  → hike layer hidden
-        // Hides legacy `roads_other` when filtering, since its filter
-        // covers both kinds and would defeat the split. Major roads,
-        // bridges, and tunnels are unaffected — you always want to see
-        // where the highway is regardless of your activity.
-        window.setActivityFilter = (mode) => {
+        // Trails & tracks overlay state. The colored split layers
+        // (roads_hike + roads_orv) start hidden via wa_layers.json so the
+        // basemap renders trails in its own neutral colors. When the user
+        // turns on the "Trails & tracks" overlay we make them visible,
+        // subject to the activity filter. When they turn it off, both go
+        // back to hidden — basemap stays clean.
+        //
+        // Two pieces of state, one apply function so order-of-operations
+        // doesn't matter (overlay can be enabled before or after the user
+        // picks an activity).
+        let _trailsOverlayOn = false;
+        let _trailsActivity = 'all';
+
+        function _applyTrailsVisibility() {
           const vis = (id, on) => {
             if (map.getLayer(id)) {
               map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
             }
           };
-          if (mode === 'hike') {
+          if (!_trailsOverlayOn) {
+            vis('roads_hike', false);
+            vis('roads_orv', false);
+            return;
+          }
+          if (_trailsActivity === 'hike') {
             vis('roads_hike', true);
             vis('roads_orv', false);
-            vis('roads_other', false);
-          } else if (mode === 'orv') {
+          } else if (_trailsActivity === 'orv') {
             vis('roads_hike', false);
             vis('roads_orv', true);
-            vis('roads_other', false);
-          } else { // 'all' or anything else
+          } else { // 'all' or unknown
             vis('roads_hike', true);
             vis('roads_orv', true);
-            vis('roads_other', true);
           }
+        }
+
+        // Toggle the colored trail overlay on/off. When off, the green hike
+        // / orange ORV split layers are hidden and the basemap renders
+        // trails in whatever color it normally would.
+        window.setTrailsOverlay = (on) => {
+          _trailsOverlayOn = !!on;
+          _applyTrailsVisibility();
+        };
+
+        // Activity filter: 'all' | 'hike' | 'orv'. Only affects which
+        // colored layer renders WHEN the trails overlay is on — when it's
+        // off, this is just a setting waiting to be applied.
+        window.setActivityFilter = (mode) => {
+          _trailsActivity = (mode === 'hike' || mode === 'orv') ? mode : 'all';
+          _applyTrailsVisibility();
         };
 
         // Off-grid-useful POI categories. Maps Protomaps `kind` strings to a
@@ -1191,14 +1217,18 @@
           map.addLayer({ id: 'wildfires-line', type: 'line', source: 'wildfires',
             layout: { visibility: 'none', 'line-cap': 'round', 'line-join': 'round' },
             paint: { 'line-color': '#ff3d00', 'line-width': 2 } });
-          map.addLayer({ id: 'overlay-trails', type: 'line', source: 'protomaps',
-            'source-layer': 'roads',
-            filter: ['in', ['get', 'kind'], ['literal', ['path', 'other']]],
-            layout: { visibility: 'none', 'line-cap': 'round', 'line-join': 'round' },
-            paint: {
-              'line-color': '#ff5722',
-              // Wider lines at higher zoom + a slight glow underneath for
-              // visibility against the tan basemap.
+          // 'overlay-trails' used to live here as a separate orange highlight
+          // layer over kind ∈ [path, other]. Its role is now played by the
+          // split roads_hike + roads_orv layers (defined in wa_layers.json,
+          // hidden by default, made visible together when the user enables
+          // the "Trails & tracks" overlay). See setTrailsOverlay below.
+          // Keeping a noop so the legacy addLayer pattern lines up; the rest
+          // of the chained overlay layer add-statements still apply.
+          map.addLayer({ id: 'overlay-trails-noop', type: 'line',
+            source: 'protomaps', 'source-layer': 'roads',
+            filter: ['==', 'kind', '__never__'],
+            layout: { visibility: 'none' },
+            paint: { 'line-color': '#000000',
               'line-width': ['interpolate', ['linear'], ['zoom'],
                 10, 1.2,
                 14, 2.5,
