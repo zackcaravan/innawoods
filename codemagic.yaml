@@ -153,17 +153,20 @@ workflows:
         script: find . -name "Podfile" -execdir pod install \;
       - name: Generate Riverpod providers
         script: dart run build_runner build --delete-conflicting-outputs
-      - name: Bump build number to match TestFlight
-        # Reads the latest build number on file in App Store Connect and
-        # bumps from there so re-runs never collide.
-        script: |
-          cd ios
-          LATEST_BUILD_NUMBER=$(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID")
-          agvtool new-version -all $(($LATEST_BUILD_NUMBER + 1))
       - name: Build .ipa
-        # Single-line invocation with quoted env-var expansion to defend
-        # against any whitespace inside the env values.
-        script: flutter build ipa --release --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+        # --build-number overrides the +N in pubspec.yaml so every CI build
+        # gets a unique CFBundleVersion. $PROJECT_BUILD_NUMBER is Codemagic's
+        # monotonic project-wide counter (never resets, never skips), so we
+        # don't need to query App Store Connect at build time — which the
+        # previous "Bump build number to match TestFlight" step did with
+        # get-latest-app-store-build-number, that queries the live App
+        # Store and returns 0 for apps still in TestFlight, causing build 1
+        # → ASC reject as "bundle version already used."
+        #
+        # Same approach the Android workflow uses, so the two platforms
+        # share one ever-increasing counter. Single-line invocation with
+        # quoted env-var expansion to defend against whitespace.
+        script: flutter build ipa --release --build-number=$PROJECT_BUILD_NUMBER --dart-define=SUPABASE_URL="$SUPABASE_URL" --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
