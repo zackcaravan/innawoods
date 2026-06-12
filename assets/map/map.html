@@ -1185,20 +1185,25 @@
           // Default 2D (no terrain) for low GL memory + reliable markers.
           // 3D terrain is enabled on demand via setMode(true).
 
-          // BASEMAP IMAGERY LAYERS — drawn first so they sit BELOW all the
-          // vector basemap layers. Only one shown at a time via setImagery().
-          // When "Hybrid" is on, the basemap's fill layers are hidden so the
-          // imagery shows through, while the line/symbol layers (roads, labels)
-          // still draw on top.
+          // BASEMAP IMAGERY LAYERS — inserted BELOW the `earth` fill so the
+          // vector basemap covers them by default. Only one shown at a time
+          // via setImagery(). When "Hybrid" is on, the basemap's fill layers
+          // (earth + landcover + landuse_*) get visibility:none, so the
+          // imagery shines through up to the road/label layers — that's
+          // what makes hybrid mode meaningful. Without the beforeId here,
+          // addLayer appends to the TOP of the stack and imagery covers
+          // everything including roads + labels (the previous bug: trails
+          // invisible on satellite + opentopo, hybrid toggle a no-op).
+          const _IMAGERY_BEFORE = map.getLayer('earth') ? 'earth' : undefined;
           map.addLayer({ id: 'imagery-sat-esri', type: 'raster', source: 'sat-esri',
             layout: { visibility: 'none' },
-            paint: { 'raster-opacity': 1.0 } });
+            paint: { 'raster-opacity': 1.0 } }, _IMAGERY_BEFORE);
           map.addLayer({ id: 'imagery-sat-usgs', type: 'raster', source: 'sat-usgs',
             layout: { visibility: 'none' },
-            paint: { 'raster-opacity': 1.0 } });
+            paint: { 'raster-opacity': 1.0 } }, _IMAGERY_BEFORE);
           map.addLayer({ id: 'imagery-opentopo', type: 'raster', source: 'opentopo',
             layout: { visibility: 'none' },
-            paint: { 'raster-opacity': 1.0 } });
+            paint: { 'raster-opacity': 1.0 } }, _IMAGERY_BEFORE);
 
           // OVERLAYS — drawn on TOP of the vector basemap.
           // `usgs-topo` covers the basemap as a translucent topo overlay;
