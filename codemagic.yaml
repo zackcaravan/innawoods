@@ -19,6 +19,16 @@
 #     CM_KEY_ALIAS             → key alias inside the keystore
 #     CM_KEY_PASSWORD          → password for that alias
 #
+#   ios-signing          (iOS workflow)
+#     IOS_CERT_KEY             → base64'd PEM of the persistent RSA key the
+#                                Distribution certificate is issued against.
+#                                Generated ONCE locally and stored here;
+#                                reused on every build so we don't mint a
+#                                fresh certificate (Apple's hard limit:
+#                                one Distribution cert per team).
+#                                  openssl genrsa -out cert_key.pem 2048
+#                                  base64 -w 0 cert_key.pem  → paste value
+#
 # Android workflow EMAILS the signed AAB to the developer; manual upload
 # to Play Console mirrors how Switchboard ships. No Play Console API or
 # service account required.
@@ -102,6 +112,13 @@ workflows:
       cocoapods: default
       groups:
         - supabase-prod
+        # See setup notes at top of file. `ios-signing` group holds
+        # IOS_CERT_KEY — the persistent RSA private key the signing
+        # certificate was issued against. Without persistence, every
+        # build generates a fresh key and tries to mint a new
+        # certificate, hitting Apple's hard one-Distribution-cert-per-team
+        # limit after the first run.
+        - ios-signing
       vars:
         BUNDLE_ID: com.innawoods.innawoods
         APP_STORE_APPLE_ID: 6777637554
@@ -127,17 +144,20 @@ workflows:
         # (where the third is set to a '@file:PATH' reference pointing at
         # a pre-staged .p8 on the runner, NOT the raw PEM contents).
         #
-        # Earlier attempts re-wrote the env var to /tmp/auth_key.p8, which
-        # ended up writing the literal string '@file:...' to disk and
-        # then failing CLI validation. The CLI handles all of this if we
-        # just leave the env vars alone.
+        # IOS_CERT_KEY is the RSA private key the Distribution certificate
+        # was issued against — stored once in the `ios-signing` env-var
+        # group as a base64 blob. Why persist instead of generating fresh
+        # each build: Apple enforces a hard one-Distribution-cert-per-team
+        # limit, so a fresh-key-every-build approach mints exactly one cert
+        # on its first run, then fails with a 409 on every subsequent run
+        # because the new key doesn't match the existing cert and Apple
+        # won't issue a second one.
         #
-        # We generate a fresh RSA key pair for the certificate signing
-        # request — fetch-signing-files registers a new Distribution cert
-        # against it if the team doesn't have a usable one yet.
+        # With a stable key, fetch-signing-files finds the cert that
+        # already matches it on every run, no new-cert API call needed.
         script: |
           set -ex
-          openssl genrsa -out /tmp/cert_key.pem 2048
+          echo "$IOS_CERT_KEY" | base64 --decode > /tmp/cert_key.pem
           keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
