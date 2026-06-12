@@ -4303,6 +4303,18 @@ class _TrailHitInfo {
 
   String get displayName => name.isNotEmpty ? name : 'Unnamed trail';
 
+  /// Great-circle length of the rendered segment in meters. Used to give the
+  /// info sheet the same distance read-out the route detail screen has.
+  double get lengthMeters {
+    if (coords.length < 2) return 0;
+    const d = Distance();
+    double total = 0;
+    for (var i = 1; i < coords.length; i++) {
+      total += d.as(LengthUnit.Meter, coords[i - 1], coords[i]);
+    }
+    return total;
+  }
+
   /// Human-readable trail type assembled from the OSM tags we got back.
   /// Falls back to bare "Trail" when we have nothing.
   String get displayKind {
@@ -4411,140 +4423,158 @@ class _TrailInfoSheetState extends State<_TrailInfoSheet> {
   @override
   Widget build(BuildContext context) {
     final info = widget.info;
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 16, right: 16, top: 12,
-        bottom: 16 + MediaQuery.viewInsetsOf(context).bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 40, height: 4,
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          Row(children: [
-            const Icon(Icons.hiking, color: AppTheme.amber),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                info.displayName,
-                style: Theme.of(context).textTheme.titleMedium,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ]),
-          const SizedBox(height: 4),
-          Text(
-            info.displayKind,
-            style: const TextStyle(color: Colors.white70, fontSize: 13),
-          ),
-          const SizedBox(height: 12),
-          // Tap-point elevation + total ascent/descent for the visible segment.
-          if (_loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Row(children: [
-                SizedBox(
-                  width: 14, height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                SizedBox(width: 10),
-                Text('Reading elevation…',
-                    style: TextStyle(color: Colors.white60)),
-              ]),
-            )
-          else
-            _TrailElevationRow(
-              tapElevM: _tapElevM,
-              stats: _stats,
-            ),
-          if (widget.canAddToRoute) ...[
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: widget.onAddToRoute,
-                icon: const Icon(Icons.add_road),
-                label: const Text('Add segment to route'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppTheme.amber,
-                  foregroundColor: Colors.black,
+    // SafeArea(top: false) gets us the bottom gesture-bar inset that
+    // showModalBottomSheet doesn't apply itself. viewInsetsOf still has to
+    // be added on top of that to clear the keyboard if it ever shows up
+    // here (it shouldn't, but defensive).
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16, right: 16, top: 12,
+          bottom: 16 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
             ),
-            if (widget.onAddWholeTrail != null) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: widget.onAddWholeTrail,
-                  icon: const Icon(Icons.linear_scale),
-                  label: Text('Add whole "${info.name}"'),
+            Row(children: [
+              const Icon(Icons.hiking, color: AppTheme.amber),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  info.displayName,
+                  style: Theme.of(context).textTheme.titleMedium,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-            ],
+            ]),
             const SizedBox(height: 4),
             Text(
-              widget.onAddWholeTrail != null
-                  ? 'Segment = just the part under your finger. Whole = '
-                      'every connected piece of this named trail visible '
-                      'in the current view.'
-                  : 'Splices this visible trail segment into your draft. '
-                      'Tap successive trails to chain them.',
-              style: const TextStyle(color: Colors.white54, fontSize: 11),
+              info.displayKind,
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
             ),
+            const SizedBox(height: 12),
+            // Length always shows (it's geometry-only, doesn't wait on the DEM).
+            // Ascent / descent fill in once the elevation sample finishes.
+            _TrailStatsRow(
+              lengthM: info.lengthMeters,
+              stats: _stats,
+              loadingElev: _loading,
+            ),
+            if (_tapElevM != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Elev. at tap point: ${_fmtFt(_tapElevM!)}',
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+            if (widget.canAddToRoute) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: widget.onAddToRoute,
+                  icon: const Icon(Icons.add_road),
+                  label: const Text('Add segment to route'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.amber,
+                    foregroundColor: Colors.black,
+                  ),
+                ),
+              ),
+              if (widget.onAddWholeTrail != null) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: widget.onAddWholeTrail,
+                    icon: const Icon(Icons.linear_scale),
+                    label: Text('Add whole "${info.name}"'),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 4),
+              Text(
+                widget.onAddWholeTrail != null
+                    ? 'Segment = just the part under your finger. Whole = '
+                        'every connected piece of this named trail visible '
+                        'in the current view.'
+                    : 'Splices this visible trail segment into your draft. '
+                        'Tap successive trails to chain them.',
+                style: const TextStyle(color: Colors.white54, fontSize: 11),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
+
+  String _fmtFt(double m) => '${(m * 3.28084).round()} ft';
 }
 
-/// Compact elevation read-out for the trail sheet — tap-point altitude on
-/// the left, ascent/descent for the visible segment on the right.
-class _TrailElevationRow extends StatelessWidget {
-  const _TrailElevationRow({required this.tapElevM, required this.stats});
+/// Compact stats triplet for the trail sheet — distance always shown, ascent
+/// + descent fill in once the elevation sample finishes (shows "…" until
+/// then so the row doesn't shift size mid-load).
+class _TrailStatsRow extends StatelessWidget {
+  const _TrailStatsRow({
+    required this.lengthM,
+    required this.stats,
+    required this.loadingElev,
+  });
 
-  final double? tapElevM;
+  final double lengthM;
   final ElevationStats? stats;
+  final bool loadingElev;
 
-  String _ft(double? m) {
-    if (m == null) return '—';
-    return '${(m * 3.28084).round()} ft';
+  static String _fmtMi(double m) {
+    final mi = m / 1609.344;
+    final ft = m * 3.28084;
+    if (mi < 0.1) return '${ft.toStringAsFixed(0)} ft';
+    return '${mi.toStringAsFixed(mi < 10 ? 2 : 1)} mi';
   }
+
+  String _ft(double m) => '${(m * 3.28084).round()} ft';
 
   @override
   Widget build(BuildContext context) {
     final s = stats;
+    String ascent;
+    String descent;
+    if (s != null) {
+      ascent = '+${_ft(s.ascentM)}';
+      descent = '−${_ft(s.descentM)}';
+    } else if (loadingElev) {
+      ascent = '…';
+      descent = '…';
+    } else {
+      ascent = '—';
+      descent = '—';
+    }
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        _ElevCell(label: 'At tap', value: _ft(tapElevM)),
-        _ElevCell(
-          label: 'Ascent',
-          value: s == null ? '—' : '+${_ft(s.ascentM).replaceAll(' ft', '')} ft',
-        ),
-        _ElevCell(
-          label: 'Descent',
-          value: s == null
-              ? '—'
-              : '−${_ft(s.descentM).replaceAll(' ft', '')} ft',
-        ),
+        _StatCell(label: 'Length', value: _fmtMi(lengthM)),
+        _StatCell(label: 'Ascent', value: ascent),
+        _StatCell(label: 'Descent', value: descent),
       ],
     );
   }
 }
 
-class _ElevCell extends StatelessWidget {
-  const _ElevCell({required this.label, required this.value});
+class _StatCell extends StatelessWidget {
+  const _StatCell({required this.label, required this.value});
   final String label;
   final String value;
   @override
