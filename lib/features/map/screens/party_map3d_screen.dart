@@ -599,14 +599,26 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       return; // malformed payload, ignore
     }
     final coordsRaw = (m['coords'] as List?) ?? const [];
-    final coords = <LatLng>[
+    final rawCoords = <LatLng>[
       for (final c in coordsRaw)
         if (c is List && c.length >= 2)
           LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble()),
     ];
+    final tap = LatLng((m['tapLat'] as num).toDouble(),
+        (m['tapLng'] as num).toDouble());
+    // CRITICAL ORIENTATION FIX. queryRenderedFeatures hands us the entire
+    // LineString of the matched feature — could be a multi-mile trail
+    // crossing tile boundaries. Its first coordinate is the start of how
+    // OSM happened to digitise the way, which may be far from where the
+    // user tapped. If we feed it to _appendTrailToDraft as-is, the
+    // straight connector goes from the existing draft tail all the way
+    // out to that far end, then the trail polyline loops BACK toward the
+    // tap point — producing the dramatic back-and-forth zigzag the user
+    // saw on-device. Flip the polyline if its tail is nearer the tap so
+    // coords[0] is always the user's tap-near end.
+    final coords = _orientPolylineTowardTap(rawCoords, tap);
     final info = _TrailHitInfo(
-      tap: LatLng((m['tapLat'] as num).toDouble(),
-          (m['tapLng'] as num).toDouble()),
+      tap: tap,
       name: ((m['name'] as String?) ?? '').trim(),
       kind: ((m['kind'] as String?) ?? '').trim(),
       kindDetail: ((m['kindDetail'] as String?) ?? '').trim(),
@@ -665,6 +677,18 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     // Sheet dismissed (any path: button, scrim tap, system back). Drop the
     // highlight so the bright cyan doesn't linger on the map.
     if (mounted) _eval('clearHighlightTrail()');
+  }
+
+  /// Flip a polyline so the end nearest [tap] is at index 0. No-op when
+  /// already oriented or when the polyline is degenerate. Used to fix the
+  /// "trail-add zigzags back to where it started" bug: vector-tile
+  /// LineStrings come in OSM-digitisation order, not user-intent order.
+  List<LatLng> _orientPolylineTowardTap(List<LatLng> coords, LatLng tap) {
+    if (coords.length < 2) return coords;
+    const d = Distance();
+    final headM = d.as(LengthUnit.Meter, tap, coords.first);
+    final tailM = d.as(LengthUnit.Meter, tap, coords.last);
+    return headM <= tailM ? coords : coords.reversed.toList();
   }
 
   /// FeatureCollection wrapper around a single LineString — same shape
@@ -819,7 +843,11 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
         }
       }
     }
-    return chain.length >= 2 ? chain : null;
+    if (chain.length < 2) return null;
+    // Orient the assembled chain the same way the single-segment path does
+    // — the user's tap should be at the entrance end, not somewhere
+    // arbitrary inside the chain or at the far end.
+    return _orientPolylineTowardTap(chain, seedNear);
   }
 
   Future<void> _dropWaypointAt(String routeId, LatLng point) async {
