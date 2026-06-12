@@ -614,6 +614,12 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       coords: coords,
     );
     final baseUrl = (_url ?? '').replaceFirst('/map.html', '');
+    // Highlight the tapped segment so the user can see what they'd be
+    // adding. Cleared on sheet close regardless of which button (if any)
+    // they chose. Pre-fly: highlight is just the segment under their
+    // finger. If they hit "Add whole" we re-highlight the full chain
+    // before committing so they get a visual moment of "yep, that's it."
+    _eval('setHighlightTrail(${jsonEncode(_lineStringGeo(coords))})');
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -629,43 +635,85 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
         },
         // "Add whole trail" is offered only when we have an OSM name to
         // stitch by. queryTrailByName + assembly happens on demand so we
-        // don't pre-compute a chain the user may not want.
+        // don't pre-compute a chain the user may not want. If the chain
+        // assembled to the same length as the tapped segment, we surface
+        // that — it's a useful signal that there are no other named
+        // segments visible (zoom out or pan around to find more).
         onAddWholeTrail: info.name.isEmpty
             ? null
             : () async {
                 final whole = await _assembleNamedTrail(info.name, info.tap);
                 if (!mounted) return;
                 Navigator.of(context).pop();
-                if (whole == null) {
+                if (whole == null || whole.length <= coords.length + 1) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
-                          'Couldn\'t find more segments of "${info.name}" '
-                          'in the current view.'),
+                          'Only one segment of "${info.name}" is in '
+                          'loaded tiles. Pan along the trail to load '
+                          'more, then try again.'),
                     ),
                   );
+                  _appendTrailToDraft(whole ?? coords);
                   return;
                 }
+                _eval('setHighlightTrail(${jsonEncode(_lineStringGeo(whole))})');
                 _appendTrailToDraft(whole);
               },
       ),
     );
+    // Sheet dismissed (any path: button, scrim tap, system back). Drop the
+    // highlight so the bright cyan doesn't linger on the map.
+    if (mounted) _eval('clearHighlightTrail()');
   }
 
-  /// Append a trail's polyline to the active draft route. Inserts the trail
-  /// as a single segment between two new waypoints (its endpoints), so undo
-  /// removes the whole trail at once. If the draft already had a tail point
-  /// elsewhere, the routing service auto-connects to the trail's entrance
-  /// per the user's snap setting.
+  /// FeatureCollection wrapper around a single LineString — same shape
+  /// the JS-side `setHighlightTrail` source expects.
+  Map<String, dynamic> _lineStringGeo(List<LatLng> coords) => {
+        'type': 'FeatureCollection',
+        'features': [
+          {
+            'type': 'Feature',
+            'geometry': {
+              'type': 'LineString',
+              'coordinates': [
+                for (final p in coords) [p.longitude, p.latitude]
+              ],
+            },
+            'properties': const {},
+          }
+        ],
+      };
+
+  /// Append a trail polyline to the active draft route.
+  ///
+  /// When the draft already has a tail, a STRAIGHT-LINE connector joins it
+  /// to the trail's entrance — we deliberately don't run the routing
+  /// service here because it tends to dogleg through unrelated streets
+  /// when the tap-target is far from the draft, producing the "weird
+  /// back-and-forth" visual the user reported. Snap-to-roads is a
+  /// click-by-click affordance; trail splice is a "this exact line"
+  /// commitment.
+  ///
+  /// Layout invariant preserved: every call adds the same number of items
+  /// to _draft and _segments, so the existing undo (one waypoint + one
+  /// segment per click) cleanly removes the trail in two undos —
+  /// connector first, then the trail itself.
   Future<void> _appendTrailToDraft(List<LatLng> trail) async {
-    if (trail.length < 2 || !_drawing) return;
-    // First: drop the entrance waypoint. This routes through the normal
-    // draw path so snap-to-roads is honored if the user has it on.
-    await _addDrawPoint(trail.first);
-    if (!mounted || !_drawing) return;
-    // Then: splice the trail itself as the connector to its end, bypassing
-    // routing — the trail polyline *is* the route here.
+    if (trail.length < 2 || !_drawing || !mounted) return;
     setState(() {
+      if (_draft.isEmpty) {
+        // First action on a fresh draft: seed with the trail's entrance.
+        _draft.add(trail.first);
+      } else {
+        // Existing draft: drop a straight-line connector to the trail's
+        // entrance, plus the entrance as a waypoint so the user can undo
+        // back to "just before the trail."
+        final prev = _draft.last;
+        _segments.add([prev, trail.first]);
+        _draft.add(trail.first);
+      }
+      // Now the trail itself, with its endpoint as the closing waypoint.
       _segments.add(List.of(trail));
       _draft.add(trail.last);
     });
@@ -707,52 +755,64 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     }
     if (segs.isEmpty) return null;
 
-    // Pick the seed segment: whichever endpoint of any segment is closest to
-    // the user's tap. Orient it so the closest endpoint is at the head, so
-    // the chain grows outward from where they tapped.
+    // Pick the seed segment: whichever segment contains an endpoint closest
+    // to the user's tap. Orientation doesn't matter — we grow from BOTH
+    // ends so a mid-trail tap captures the trail in both directions.
     const dist = Distance();
     double seedDist = double.infinity;
     int seedIdx = 0;
-    bool seedReverse = false;
     for (var i = 0; i < segs.length; i++) {
       final dHead = dist.as(LengthUnit.Meter, seedNear, segs[i].first);
       final dTail = dist.as(LengthUnit.Meter, seedNear, segs[i].last);
-      if (dHead < seedDist) {
-        seedDist = dHead;
+      final d = dHead < dTail ? dHead : dTail;
+      if (d < seedDist) {
+        seedDist = d;
         seedIdx = i;
-        seedReverse = false;
-      }
-      if (dTail < seedDist) {
-        seedDist = dTail;
-        seedIdx = i;
-        seedReverse = true;
       }
     }
-    final chain = List<LatLng>.of(
-        seedReverse ? segs[seedIdx].reversed : segs[seedIdx]);
+    final chain = List<LatLng>.of(segs[seedIdx]);
     final used = <int>{seedIdx};
 
-    // Grow the chain by repeatedly finding the unused segment whose nearer
-    // endpoint matches the chain's tail within 5 m. The 5 m epsilon
-    // tolerates the floating-point jitter at tile-boundary splits without
-    // welding disconnected ways that just happen to share a name.
+    // Grow at BOTH ends. Each pass tries to extend chain.last AND chain.first
+    // using the same 5 m endpoint-match epsilon (tolerates tile-boundary
+    // float jitter without welding unrelated ways that just happen to
+    // share a name). Stops when neither end can grow anymore.
     const eps = 5.0;
     var grew = true;
     while (grew) {
       grew = false;
-      final tail = chain.last;
+      // Grow the tail (append).
       for (var i = 0; i < segs.length; i++) {
         if (used.contains(i)) continue;
-        final dHead = dist.as(LengthUnit.Meter, tail, segs[i].first);
-        final dTail = dist.as(LengthUnit.Meter, tail, segs[i].last);
+        final dHead = dist.as(LengthUnit.Meter, chain.last, segs[i].first);
+        final dTail = dist.as(LengthUnit.Meter, chain.last, segs[i].last);
         if (dHead <= eps) {
-          chain.addAll(segs[i].skip(1)); // skip the shared point
+          chain.addAll(segs[i].skip(1));
           used.add(i);
           grew = true;
           break;
         }
         if (dTail <= eps) {
           chain.addAll(segs[i].reversed.skip(1));
+          used.add(i);
+          grew = true;
+          break;
+        }
+      }
+      // Grow the head (prepend).
+      for (var i = 0; i < segs.length; i++) {
+        if (used.contains(i)) continue;
+        final dHead = dist.as(LengthUnit.Meter, chain.first, segs[i].first);
+        final dTail = dist.as(LengthUnit.Meter, chain.first, segs[i].last);
+        if (dTail <= eps) {
+          chain.insertAll(0, segs[i].take(segs[i].length - 1));
+          used.add(i);
+          grew = true;
+          break;
+        }
+        if (dHead <= eps) {
+          chain.insertAll(0,
+              segs[i].reversed.take(segs[i].length - 1).toList());
           used.add(i);
           grew = true;
           break;

@@ -743,22 +743,40 @@
           }
         };
 
-        // Find every rendered trail/road segment whose `name` matches the
-        // given string. Returns a JSON array of LineStrings (each is an
-        // array of [lng,lat]). Used by the trail info sheet's
-        // "Add whole trail" action: a Protomaps trail is fragmented into
-        // multiple features across tile boundaries, so we collect them and
-        // let Dart chain them by endpoint proximity. Limited to the layers
-        // that surface the `roads` source-layer — major roads, trails,
-        // bridges, tunnels. Skipped if `name` is empty.
+        // Find every trail/road segment in the loaded PMTiles cache whose
+        // `name` matches the given string. Returns a JSON array of
+        // LineStrings (each is an array of [lng,lat]).
+        //
+        // querySourceFeatures (vs queryRenderedFeatures): source-features
+        // sees all features in loaded tiles, regardless of current viewport.
+        // For a long trail that runs partway off-screen, that's the
+        // difference between getting the visible 10% and getting everything
+        // the renderer has cached. Still bounded by which tiles have been
+        // loaded — the user has to have panned across the trail at some
+        // point — but no longer bounded by what's pixel-visible right now.
+        //
+        // Dart then chains the LineStrings head-to-tail by endpoint
+        // proximity. See _assembleNamedTrail.
         window.queryTrailByName = (name) => {
           if (!name) return JSON.stringify([]);
-          const trailLayers = [
-            'roads_hike', 'roads_orv', 'roads_other',
-            'roads_bridges_other', 'roads_tunnels_other',
-          ].filter(id => !!map.getLayer(id));
-          if (!trailLayers.length) return JSON.stringify([]);
-          const hits = map.queryRenderedFeatures({ layers: trailLayers });
+          const src = map.getSource('protomaps');
+          if (!src) return JSON.stringify([]);
+          let hits = [];
+          try {
+            hits = map.querySourceFeatures('protomaps', {
+              sourceLayer: 'roads',
+              filter: ['==', ['get', 'name'], name],
+            }) || [];
+          } catch (e) {
+            // sourceLayer / filter combination may not be supported on some
+            // MapLibre builds — fall back to the old rendered query so the
+            // feature degrades gracefully instead of breaking.
+            const trailLayers = [
+              'roads_hike', 'roads_orv', 'roads_other',
+              'roads_bridges_other', 'roads_tunnels_other',
+            ].filter(id => !!map.getLayer(id));
+            hits = map.queryRenderedFeatures({ layers: trailLayers });
+          }
           const out = [];
           for (const f of hits) {
             const fname = (f.properties && f.properties.name) || '';
@@ -850,6 +868,17 @@
         };
         window.setDraft = (gj) => { const s = map.getSource('draft'); if (s) s.setData(gj); };
         window.setSearch = (gj) => { const s = map.getSource('search'); if (s) s.setData(gj); };
+        // Trail-highlight overlay. Fed a GeoJSON FeatureCollection (usually
+        // a single LineString) when the user taps a trail; cleared when the
+        // info sheet closes or they pick a different segment.
+        window.setHighlightTrail = (gj) => {
+          const s = map.getSource('highlight-trail-src');
+          if (s) s.setData(gj);
+        };
+        window.clearHighlightTrail = () => {
+          const s = map.getSource('highlight-trail-src');
+          if (s) s.setData({ type: 'FeatureCollection', features: [] });
+        };
         window.getCenter = () => { const c = map.getCenter(); return JSON.stringify({ lng: c.lng, lat: c.lat }); };
 
         // Constrain panning to a bbox. Used to keep the user inside the
@@ -1230,6 +1259,20 @@
           map.addLayer({ id: 'draft-line', type: 'line', source: 'draft',
             layout: { 'line-cap': 'round', 'line-join': 'round' },
             paint: { 'line-color': '#4fc3f7', 'line-width': 4, 'line-dasharray': [2, 1] } });
+          // Highlight overlay for the trail-info sheet — bright cyan so it
+          // pops over both hike-green and ORV-orange. Source is fed by Dart
+          // via setHighlightTrail / clearHighlightTrail when the sheet
+          // opens / closes (or when the user is considering a segment).
+          map.addSource('highlight-trail-src',
+            { type: 'geojson', data: EMPTY });
+          map.addLayer({
+            id: 'highlight-trail-layer', type: 'line',
+            source: 'highlight-trail-src',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': '#00e5ff', 'line-width': 6, 'line-opacity': 0.95,
+            },
+          });
           map.addSource('search', { type: 'geojson', data: EMPTY });
           map.addLayer({ id: 'search-dot', type: 'circle', source: 'search',
             paint: { 'circle-radius': 7, 'circle-color': '#ff5252',
