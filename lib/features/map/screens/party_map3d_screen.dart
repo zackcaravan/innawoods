@@ -1925,10 +1925,18 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     if (_url == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    // When a modal route is pushed on top (any showModalBottomSheet call),
+    // we need the WebView to stop swallowing touches — otherwise on iOS
+    // scrolling inside the sheet pans the map underneath. ModalRoute.of
+    // re-runs build() when isCurrent changes, so this gates IgnorePointer
+    // automatically without per-call-site bookkeeping.
+    final routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
     return Scaffold(
       body: Stack(
         children: [
-          InAppWebView(
+          IgnorePointer(
+            ignoring: !routeIsCurrent,
+            child: InAppWebView(
             initialUrlRequest: URLRequest(url: WebUri(_url!)),
             initialSettings: InAppWebViewSettings(
               javaScriptEnabled: true,
@@ -2014,6 +2022,7 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
               await controller.reload();
             },
           ),
+          ), // close IgnorePointer
           _TopBar(
             label: party?.displayLabel ?? 'Party',
             unread: _unread,
