@@ -37,6 +37,7 @@ import '../../../shared/services/settings_store.dart';
 import '../../../shared/models/track.dart';
 import '../../../shared/services/coord_format.dart';
 import '../../../shared/services/dem_sampler.dart';
+import '../../../shared/services/rural_router.dart';
 import '../../../shared/services/track_recorder.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../maps/providers/maps_provider.dart';
@@ -44,6 +45,8 @@ import '../../party/providers/party_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../../mesh/providers/mesh_provider.dart';
 import '../../party/widgets/invite_qr_dialog.dart';
+import '../../party/widgets/man_down_button.dart';
+import '../../party/widgets/mayday_alert_dialog.dart';
 import '../../tracks/providers/tracks_provider.dart';
 import '../../../core/errors/user_error.dart';
 import '../../../shared/services/mesh/mesh_radio.dart';
@@ -220,6 +223,13 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
   bool _autoCentered = false;
   bool _unread = false;
   int _lastSeenMsgCount = -1;
+
+  // Mayday-navigation state — populated after the receiver accepts the
+  // navigate prompt. _navManeuvers drives the top banner; clearing it
+  // dismisses the navigation overlay entirely.
+  List<Maneuver> _navManeuvers = const [];
+  String? _navTargetCallsign;
+  double _navTotalDistM = 0;
 
   /// Follow-mode: when on, every position update slides the camera to the
   /// user's location at the current zoom. Manual map gestures flip it off;
@@ -689,6 +699,64 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
     final headM = d.as(LengthUnit.Meter, tap, coords.first);
     final tailM = d.as(LengthUnit.Meter, tap, coords.last);
     return headM <= tailM ? coords : coords.reversed.toList();
+  }
+
+  /// Handle an inbound mayday from another party member: pop the alert
+  /// dialog; on Navigate, compute a rural-preferring route from our
+  /// current position to theirs and render it on the map using the
+  /// existing trail-highlight overlay (cyan polyline), plus surface
+  /// the first maneuver in a banner. Failures (no route, no graph) are
+  /// surfaced as snackbars rather than silently dropping the alert.
+  Future<void> _handleInboundMayday(ChatMessage m) async {
+    if (!mounted) return;
+    // Fly the camera to the mayday location so the user can see it BEFORE
+    // they decide. fitBounds covers both points if we have our own fix.
+    final maydayLoc = m.mayday?.location;
+    if (maydayLoc != null &&
+        !(maydayLoc.latitude == 0 && maydayLoc.longitude == 0)) {
+      await _flyToPoint(maydayLoc, zoom: 13);
+    }
+    final selfPos = ref.read(selfPositionProvider).valueOrNull;
+    final selfLoc = selfPos != null
+        ? LatLng(selfPos.latitude, selfPos.longitude)
+        : null;
+    final resp = await MaydayAlertDialog.show(
+      context,
+      message: m,
+      selfLocation: selfLoc,
+    );
+    if (!mounted) return;
+    if (resp != MaydayResponse.navigate) return;
+    if (selfLoc == null || maydayLoc == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('No GPS fix available to route from.')),
+      );
+      return;
+    }
+    // Compute the route via the rural-router JS engine. Allow a moment
+    // for tiles to settle if the user just panned in.
+    final router = RuralRouter(evalJs: _eval);
+    final route = await router.route(from: selfLoc, to: maydayLoc);
+    if (!mounted) return;
+    if (!route.found) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(route.reason ?? 'No route found.')),
+      );
+      return;
+    }
+    // Render as a cyan highlight polyline. Reusing setHighlightTrail
+    // keeps us from adding another always-on source for now; future
+    // polish: dedicated `nav-route` source with a routing arrow.
+    _eval('setHighlightTrail(${jsonEncode(_lineStringGeo(route.coords))})');
+    // First-turn banner.
+    final maneuvers = await router.maneuversFor(route.coords);
+    if (!mounted) return;
+    setState(() {
+      _navManeuvers = maneuvers;
+      _navTargetCallsign = m.callsign;
+      _navTotalDistM = route.distanceMeters;
+    });
   }
 
   /// FeatureCollection wrapper around a single LineString — same shape
@@ -1886,9 +1954,18 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
         return;
       }
       if (list.length > _lastSeenMsgCount) {
-        final fresh = list.skip(_lastSeenMsgCount);
+        final fresh = list.skip(_lastSeenMsgCount).toList();
         _lastSeenMsgCount = list.length;
         if (fresh.any((m) => !m.mine)) setState(() => _unread = true);
+        // Mayday handling — pop the full-screen alert for any inbound
+        // mayday message that isn't from us. The dialog suppresses
+        // duplicates because we only fire on .skip() of the newly
+        // arrived messages.
+        for (final m in fresh) {
+          if (m.mine || m.kind != ChatKind.mayday) continue;
+          _handleInboundMayday(m);
+          break; // one alert at a time
+        }
       }
     });
 
@@ -2032,6 +2109,27 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
             },
           ),
           ), // close IgnorePointer
+          if (_navManeuvers.isNotEmpty)
+            Positioned(
+              top: MediaQuery.paddingOf(context).top + 70,
+              left: 12,
+              right: 12,
+              child: _MaydayNavBanner(
+                callsign: _navTargetCallsign ?? '',
+                totalDistM: _navTotalDistM,
+                nextManeuver: _navManeuvers.length > 1
+                    ? _navManeuvers[1]
+                    : _navManeuvers.first,
+                onCancel: () {
+                  setState(() {
+                    _navManeuvers = const [];
+                    _navTargetCallsign = null;
+                    _navTotalDistM = 0;
+                  });
+                  _eval('clearHighlightTrail()');
+                },
+              ),
+            ),
           _TopBar(
             label: party?.displayLabel ?? 'Party',
             unread: _unread,
@@ -2409,6 +2507,8 @@ class _RosterSheet extends ConsumerWidget {
                 ),
               ),
             const SizedBox(height: 16),
+            ManDownButton(partyId: partyId),
+            const SizedBox(height: 12),
             _Actions(partyId: partyId, isHost: isHost),
           ],
         ),
@@ -4699,3 +4799,89 @@ class _StatCell extends StatelessWidget {
   }
 }
 
+
+// ===========================================================================
+// Mayday navigation banner — surfaces the next maneuver + total distance to
+// the party member who triggered Man-down. Sits below the top bar; persists
+// until the user taps the close icon.
+// ===========================================================================
+class _MaydayNavBanner extends StatelessWidget {
+  const _MaydayNavBanner({
+    required this.callsign,
+    required this.totalDistM,
+    required this.nextManeuver,
+    required this.onCancel,
+  });
+
+  final String callsign;
+  final double totalDistM;
+  final Maneuver nextManeuver;
+  final VoidCallback onCancel;
+
+  IconData get _turnIcon {
+    switch (nextManeuver.type) {
+      case ManeuverType.depart:      return Icons.navigation;
+      case ManeuverType.slightLeft:  return Icons.turn_slight_left;
+      case ManeuverType.left:        return Icons.turn_left;
+      case ManeuverType.sharpLeft:   return Icons.turn_sharp_left;
+      case ManeuverType.slightRight: return Icons.turn_slight_right;
+      case ManeuverType.right:       return Icons.turn_right;
+      case ManeuverType.sharpRight:  return Icons.turn_sharp_right;
+      case ManeuverType.uturn:       return Icons.u_turn_left;
+      case ManeuverType.arrive:      return Icons.location_on;
+    }
+  }
+
+  static String _fmtMi(double m) {
+    final mi = m / 1609.344;
+    final ft = m * 3.28084;
+    if (mi < 0.1) return '${ft.toStringAsFixed(0)} ft';
+    return '${mi.toStringAsFixed(mi < 10 ? 1 : 0)} mi';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFF0a1d2c),
+      elevation: 4,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+        child: Row(
+          children: [
+            Icon(_turnIcon, color: const Color(0xFF00e5ff), size: 36),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${nextManeuver.type.instruction} in '
+                    '${_fmtMi(nextManeuver.distFromPrevM)}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'To $callsign · ${_fmtMi(totalDistM)} total',
+                    style: const TextStyle(
+                        color: Colors.white60, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white60),
+              onPressed: onCancel,
+              tooltip: 'Cancel navigation',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

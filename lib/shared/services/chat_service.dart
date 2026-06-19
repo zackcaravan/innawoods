@@ -4,6 +4,7 @@
 import 'dart:async';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
@@ -39,7 +40,34 @@ class ChatService {
   final StreamController<_LocalChatEcho> _localEchoes =
       StreamController<_LocalChatEcho>.broadcast();
 
-  Future<void> send({required String partyId, required String text}) async {
+  Future<void> send({required String partyId, required String text}) =>
+      _send(partyId: partyId, text: text, kind: ChatKind.text);
+
+  /// Broadcast a Man-down mayday to the party. Reuses the encrypted-chat
+  /// fanout (Supabase + mesh) so receivers get it over whatever transport
+  /// is alive, with the same dedup-by-uuid guarantees. [location] is
+  /// embedded inside the ciphertext so receivers can route to the sender
+  /// without waiting for the next location publish to catch up.
+  Future<void> sendMayday({
+    required String partyId,
+    required LatLng location,
+    String? note,
+  }) => _send(
+        partyId: partyId,
+        text: note ?? 'Man down',
+        kind: ChatKind.mayday,
+        extras: {
+          'mayday_lat': location.latitude,
+          'mayday_lng': location.longitude,
+        },
+      );
+
+  Future<void> _send({
+    required String partyId,
+    required String text,
+    required ChatKind kind,
+    Map<String, Object?>? extras,
+  }) async {
     final key = await _session.groupKey(partyId);
     if (key == null) throw StateError('No encryption key for this party');
     final userId = _client.auth.currentUser!.id;
@@ -53,12 +81,21 @@ class ChatService {
       'text': text,
       'uuid': msgUuid,
       'user_id': userId,
+      if (kind != ChatKind.text) 'kind': kind.id,
+      if (extras != null) ...extras,
     });
     final wire = payload.toWire();
     // Local echo first — the user sees their own message immediately even
     // when both transports fail (e.g. radio busy + cell out).
     _localEchoes.add(_LocalChatEcho(
-        uuid: msgUuid, text: text, userId: userId, sentAt: sentAt));
+      uuid: msgUuid,
+      text: text,
+      userId: userId,
+      sentAt: sentAt,
+      kind: kind,
+      maydayLat: (extras?['mayday_lat'] as num?)?.toDouble(),
+      maydayLng: (extras?['mayday_lng'] as num?)?.toDouble(),
+    ));
     // Both transports run in parallel, each isolated so an offline
     // Supabase can't sink the mesh delivery and vice versa.
     final supabaseFuture = () async {
@@ -118,6 +155,15 @@ class ChatService {
         // back to the user_id baked into the encrypted payload for
         // mesh-only messages where the row column doesn't exist.
         final sender = senderId ?? data['user_id'] as String?;
+        final kind = ChatKind.fromId(data['kind'] as String?);
+        MaydayPayload? mayday;
+        if (kind == ChatKind.mayday) {
+          final lat = (data['mayday_lat'] as num?)?.toDouble();
+          final lng = (data['mayday_lng'] as num?)?.toDouble();
+          if (lat != null && lng != null) {
+            mayday = MaydayPayload(location: LatLng(lat, lng));
+          }
+        }
         messages[uuid] = ChatMessage(
           id: uuid,
           senderId: sender ?? '',
@@ -125,6 +171,8 @@ class ChatService {
           text: data['text'] as String? ?? '',
           sentAt: sentAt,
           mine: sender == selfId,
+          kind: kind,
+          mayday: mayday,
         );
         emit();
       } catch (_) {
@@ -207,6 +255,12 @@ class ChatService {
       // before any network round-trip completes.
       echoSub = _localEchoes.stream.listen((ev) {
         if (messages.containsKey(ev.uuid)) return;
+        MaydayPayload? mayday;
+        if (ev.kind == ChatKind.mayday &&
+            ev.maydayLat != null && ev.maydayLng != null) {
+          mayday = MaydayPayload(
+              location: LatLng(ev.maydayLat!, ev.maydayLng!));
+        }
         messages[ev.uuid] = ChatMessage(
           id: ev.uuid,
           senderId: ev.userId,
@@ -214,6 +268,8 @@ class ChatService {
           text: ev.text,
           sentAt: ev.sentAt,
           mine: ev.userId == selfId,
+          kind: ev.kind,
+          mayday: mayday,
         );
         emit();
       });
@@ -241,9 +297,15 @@ class _LocalChatEcho {
     required this.text,
     required this.userId,
     required this.sentAt,
+    this.kind = ChatKind.text,
+    this.maydayLat,
+    this.maydayLng,
   });
   final String uuid;
   final String text;
   final String userId;
   final DateTime sentAt;
+  final ChatKind kind;
+  final double? maydayLat;
+  final double? maydayLng;
 }
