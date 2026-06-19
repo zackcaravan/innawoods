@@ -389,6 +389,9 @@
         }
 
         // Build an adjacency-list graph from the loaded road features.
+        // Each edge carries its OSM `kind` so the routing weights can
+        // prefer trails + rural roads over highways. The snap-to-trail
+        // path ignores `kind` (uniform weights); the routing path uses it.
         function _buildRoadGraph() {
           const nodes = new Map();
           const edges = [];
@@ -400,6 +403,7 @@
           const seen = new Set();
           for (const r of roads) {
             const g = r.geometry;
+            const kind = (r.properties && r.properties.kind) || 'other';
             const lines = g.type === 'LineString' ? [g.coordinates] :
                           g.type === 'MultiLineString' ? g.coordinates : [];
             for (const ls of lines) {
@@ -412,16 +416,228 @@
                 seen.add(dedup);
                 const len = _haversineM(ac, bc);
                 const id = edges.length;
-                edges.push({ a, b, ac, bc, len, id });
+                edges.push({ a, b, ac, bc, len, id, kind });
                 if (!nodes.has(a)) nodes.set(a, { coord: ac, edges: [] });
                 if (!nodes.has(b)) nodes.set(b, { coord: bc, edges: [] });
-                nodes.get(a).edges.push({ to: b, len, id });
-                nodes.get(b).edges.push({ to: a, len, id });
+                nodes.get(a).edges.push({ to: b, len, id, kind });
+                nodes.get(b).edges.push({ to: a, len, id, kind });
               }
             }
           }
           return { nodes, edges };
         }
+
+        // Cost multiplier per OSM `kind`. Together with edge length these
+        // are what the rural-router minimises. Tuned so that:
+        //   - a path/track is cheaper per meter than any road
+        //   - minor (residential) roads are mildly penalised
+        //   - major roads are heavily penalised (3x)
+        //   - highways are very heavily penalised (5x)
+        // Net effect: Dijkstra picks the longer trail over the shorter
+        // highway shortcut as long as the trail isn't more than ~5x the
+        // straight-line distance.
+        function _ruralCostMul(kind) {
+          switch (kind) {
+            case 'path':       return 1.0;   // OSM footway / path
+            case 'other':      return 1.0;   // unclassified tracks / forest roads
+            case 'minor_road': return 1.2;   // residential / tertiary
+            case 'major_road': return 3.0;   // primary / secondary
+            case 'highway':    return 5.0;   // motorway / trunk
+            case 'pedestrian': return 1.1;
+            default:           return 1.5;
+          }
+        }
+
+        // Weighted Dijkstra used for rural-router pathfinding. Same shape as
+        // _dijkstraWithPrev but each edge contributes `len * costMul` to the
+        // accumulated distance, biasing the search toward trail-heavy paths.
+        // The recorded `dist` is the WEIGHTED cost; the polyline length
+        // measured at the end is the literal meters.
+        function _dijkstraRural(graph, startEdge, startT, maxCost) {
+          const dist = new Map();
+          const prev = new Map();
+          const heap = new _MinHeap();
+          const startMul = _ruralCostMul(startEdge.kind);
+          const dA = startEdge.len * startT * startMul;
+          const dB = startEdge.len * (1 - startT) * startMul;
+          dist.set(startEdge.a, dA);
+          dist.set(startEdge.b, dB);
+          heap.push([dA, startEdge.a]);
+          heap.push([dB, startEdge.b]);
+          let visited = 0;
+          while (heap.size && visited < 8000) {
+            const [d, u] = heap.pop();
+            if (d > (dist.get(u) ?? Infinity)) continue;
+            if (d > maxCost) break;
+            visited++;
+            const node = graph.nodes.get(u);
+            if (!node) continue;
+            for (const e of node.edges) {
+              const mul = _ruralCostMul(e.kind);
+              const nd = d + e.len * mul;
+              if (nd > maxCost) continue;
+              if (nd < (dist.get(e.to) ?? Infinity)) {
+                dist.set(e.to, nd);
+                prev.set(e.to, u);
+                heap.push([nd, e.to]);
+              }
+            }
+          }
+          return { dist, prev };
+        }
+
+        // Public entry point: route from (fromLng, fromLat) to
+        // (toLng, toLat) using whatever road graph is currently loaded.
+        // Returns JSON of the form:
+        //   { coords: [[lng,lat], ...], distM: 1234.5, found: true }
+        //   { coords: [], distM: 0, found: false, reason: '...' }
+        //
+        // `found: false` is the honest answer when the graph is empty
+        // (no road tiles loaded yet) or when the endpoints are outside
+        // routable range. Callers should surface this to the user rather
+        // than render a straight line as if it were a route.
+        window.routeBetween = (fromLng, fromLat, toLng, toLat) => {
+          const graph = _buildRoadGraph();
+          if (graph.edges.length < 2) {
+            return JSON.stringify({ coords: [], distM: 0,
+              found: false,
+              reason: 'No road data loaded — pan the route into view first.' });
+          }
+          // Project both endpoints onto their nearest edges in the graph.
+          function project(lng, lat) {
+            let best = null;
+            for (const e of graph.edges) {
+              const p = _projectOnEdge([lng, lat], e.ac, e.bc);
+              if (!best || p.distMeters < best.distMeters) {
+                best = { edge: e, t: p.t, point: p.point, distMeters: p.distMeters };
+              }
+            }
+            return best;
+          }
+          const start = project(fromLng, fromLat);
+          const end = project(toLng, toLat);
+          if (!start || !end) {
+            return JSON.stringify({ coords: [], distM: 0,
+              found: false, reason: 'Endpoint not near any road.' });
+          }
+          if (start.distMeters > 1000 || end.distMeters > 1000) {
+            return JSON.stringify({ coords: [], distM: 0,
+              found: false,
+              reason: 'Endpoint too far from any loaded road (>1km).' });
+          }
+          // Same-edge shortcut.
+          if (start.edge.id === end.edge.id) {
+            const coords = [start.point, end.point];
+            return JSON.stringify({ coords, distM: _haversineM(coords[0], coords[1]),
+              found: true });
+          }
+          // Generous weighted cost budget — ~150km × 5x highway penalty.
+          // Sounds extreme but most realistic backcountry distances are
+          // well within this, and Dijkstra short-circuits on the heap
+          // once it overshoots so the cap is mostly a safety valve.
+          const dijk = _dijkstraRural(graph, start.edge, start.t, 750000);
+          // Find the cheapest reachable endpoint of the target edge.
+          const endMul = _ruralCostMul(end.edge.kind);
+          const costA = dijk.dist.get(end.edge.a);
+          const costB = dijk.dist.get(end.edge.b);
+          if (costA == null && costB == null) {
+            return JSON.stringify({ coords: [], distM: 0,
+              found: false,
+              reason: 'No path within loaded tiles.' });
+          }
+          // Reconstruct via the existing helper (which handles the leading
+          // and trailing edge fractions).
+          const coords = _reconstructPath(graph, start.edge, start.t,
+              end.edge, end.t, dijk);
+          // Total polyline length in meters.
+          let distM = 0;
+          for (let i = 1; i < coords.length; i++) {
+            distM += _haversineM(coords[i - 1], coords[i]);
+          }
+          return JSON.stringify({ coords, distM, found: true });
+        };
+
+        // ---- Turn-by-turn maneuver classification ----------------------
+        // Convert a routed polyline to a list of meaningful "turns" with
+        // their cumulative distance from the start. Voice or banner UIs
+        // use this to surface "In 200m, turn right."
+        //
+        // Algorithm: compute the heading change at each interior vertex.
+        // Small changes (<= ~25°) are noise from polyline detail and get
+        // skipped; bigger ones are classified into 7 buckets covering the
+        // realistic gamut of off-road maneuvers. The first and last entry
+        // are always emitted as "Depart" and "Arrive" so the UI has
+        // bookends without special cases.
+        function _bearingDeg(a, b) {
+          // Standard great-circle initial bearing.
+          const toRad = (x) => x * Math.PI / 180;
+          const toDeg = (x) => x * 180 / Math.PI;
+          const lat1 = toRad(a[1]), lat2 = toRad(b[1]);
+          const dLng = toRad(b[0] - a[0]);
+          const y = Math.sin(dLng) * Math.cos(lat2);
+          const x = Math.cos(lat1) * Math.sin(lat2)
+                  - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+          let brng = toDeg(Math.atan2(y, x));
+          return (brng + 360) % 360;
+        }
+        function _classifyTurn(deltaDeg) {
+          // deltaDeg is in (-180, 180]. Positive = right, negative = left.
+          const a = Math.abs(deltaDeg);
+          if (a < 25)  return 'continue';
+          if (a < 60)  return deltaDeg > 0 ? 'slight_right' : 'slight_left';
+          if (a < 120) return deltaDeg > 0 ? 'right'        : 'left';
+          if (a < 160) return deltaDeg > 0 ? 'sharp_right'  : 'sharp_left';
+          return 'uturn';
+        }
+        window.maneuversFor = (coordsJson) => {
+          let coords;
+          try { coords = JSON.parse(coordsJson); }
+          catch (_) { return JSON.stringify([]); }
+          if (!coords || coords.length < 2) return JSON.stringify([]);
+
+          // Cumulative distance per vertex.
+          const cum = [0];
+          for (let i = 1; i < coords.length; i++) {
+            cum.push(cum[i - 1] + _haversineM(coords[i - 1], coords[i]));
+          }
+          const totalM = cum[cum.length - 1];
+
+          const out = [{
+            type: 'depart',
+            distFromStartM: 0,
+            distFromPrevM: 0,
+            lng: coords[0][0], lat: coords[0][1],
+          }];
+          for (let i = 1; i < coords.length - 1; i++) {
+            const b1 = _bearingDeg(coords[i - 1], coords[i]);
+            const b2 = _bearingDeg(coords[i], coords[i + 1]);
+            let delta = b2 - b1;
+            if (delta > 180) delta -= 360;
+            if (delta < -180) delta += 360;
+            const type = _classifyTurn(delta);
+            if (type === 'continue') continue;
+            const distFromStart = cum[i];
+            const distFromPrev = distFromStart - out[out.length - 1].distFromStartM;
+            // Suppress micro-turns within 30m of the previous one — those
+            // are usually polyline detail at intersections, not separate
+            // instructions.
+            if (distFromPrev < 30) continue;
+            out.push({
+              type,
+              distFromStartM: distFromStart,
+              distFromPrevM: distFromPrev,
+              lng: coords[i][0], lat: coords[i][1],
+            });
+          }
+          out.push({
+            type: 'arrive',
+            distFromStartM: totalM,
+            distFromPrevM: totalM - out[out.length - 1].distFromStartM,
+            lng: coords[coords.length - 1][0],
+            lat: coords[coords.length - 1][1],
+          });
+          return JSON.stringify(out);
+        };
 
         // Bounded Dijkstra from a point on `edge` (parameter t). Returns
         // a map node-key → distance in meters, capped at `maxDist`.
