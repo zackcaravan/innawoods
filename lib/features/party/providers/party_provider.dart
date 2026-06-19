@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Caravan Electric, LLC.
 
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
@@ -172,12 +173,56 @@ Stream<Position> selfPosition(Ref ref) async* {
       ? LocationAccuracy.medium
       : LocationAccuracy.high;
   final filterM = settings.tripMode ? 20 : 5;
-  yield* Geolocator.getPositionStream(
-    locationSettings: LocationSettings(
+
+  // On Android, AndroidSettings.foregroundNotificationConfig spawns a
+  // foreground service so the stream keeps emitting fixes when the screen
+  // is off — without this, Android Doze kills location updates after a
+  // few minutes and party members see each other go stale. iOS handles
+  // background location via UIBackgroundModes + the system's significant
+  // location service, no equivalent config needed in code.
+  final LocationSettings locSettings;
+  if (Platform.isAndroid) {
+    locSettings = AndroidSettings(
       accuracy: accuracy,
       distanceFilter: filterM,
-    ),
-  );
+      // Use the foreground service so background fixes keep flowing
+      // regardless of Doze / battery optimisations. The persistent
+      // notification is the contract Android requires for that privilege.
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
+        notificationTitle: 'Sharing with your crew',
+        notificationText:
+            'Innawoods is broadcasting your encrypted position. '
+            'Tap to open. Leave the party to stop.',
+        notificationIcon:
+            AndroidResource(name: 'launch_background', defType: 'drawable'),
+        // setOngoing: true → user can't swipe-dismiss; matches "this is
+        // genuinely about active sharing, not a background daemon."
+        setOngoing: true,
+        // Keep the service running across device sleep (Doze whitelisted).
+        enableWakeLock: true,
+      ),
+    );
+  } else if (Platform.isIOS) {
+    locSettings = AppleSettings(
+      accuracy: accuracy,
+      distanceFilter: filterM,
+      // Required so iOS keeps emitting fixes when the app is backgrounded.
+      // Pairs with UIBackgroundModes=location in Info.plist (already set).
+      allowBackgroundLocationUpdates: true,
+      // showBackgroundLocationIndicator: true draws the blue pulsing bar
+      // at the top of the screen — honest signal to the user that we're
+      // actively reading their location while they're in another app.
+      showBackgroundLocationIndicator: true,
+      pauseLocationUpdatesAutomatically: false,
+      activityType: ActivityType.fitness,
+    );
+  } else {
+    locSettings = LocationSettings(
+      accuracy: accuracy,
+      distanceFilter: filterM,
+    );
+  }
+  yield* Geolocator.getPositionStream(locationSettings: locSettings);
 }
 
 /// Controls whether this device is broadcasting its own (encrypted) location
@@ -239,4 +284,17 @@ class LocationSharing extends _$LocationSharing {
     _sub = null;
     state = false;
   }
+
+  /// Public read-through to the publisher's check. Used by the settings
+  /// screen to show whether background sharing is already armed.
+  Future<bool> hasBackgroundPermission() =>
+      ref.read(locationPublisherProvider).hasBackgroundPermission();
+
+  /// Try to upgrade the user from whileInUse → always so position keeps
+  /// flowing while the phone is in their pocket. MUST be called only after
+  /// the prominent disclosure screen has been shown and accepted (Google
+  /// requires it before the OS prompt). Returns the resulting state so the
+  /// caller can update UI / show a toast.
+  Future<bool> requestBackgroundUpgrade() =>
+      ref.read(locationPublisherProvider).requestBackgroundUpgrade();
 }

@@ -9,6 +9,9 @@ import '../../../shared/services/coord_format.dart';
 import '../../../shared/services/settings_store.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/errors/user_error.dart';
+import '../../../core/theme/app_theme.dart';
+import '../../onboarding/screens/background_disclosure_screen.dart';
+import '../../party/providers/party_provider.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -196,6 +199,8 @@ class _Body extends ConsumerWidget {
           style: TextStyle(fontSize: 12, color: Colors.white54),
         ),
         const Divider(height: 32),
+        const _BackgroundLocationTile(),
+        const Divider(height: 32),
         Text('Safety', style: Theme.of(context).textTheme.titleMedium),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -234,4 +239,129 @@ class _Body extends ConsumerWidget {
 
   String _label(int seconds) =>
       seconds < 60 ? '${seconds}s' : '${(seconds / 60).toStringAsFixed(seconds % 60 == 0 ? 0 : 1)} min';
+}
+
+/// Tile that exposes the "Share with screen off" state and triggers the
+/// disclosure → OS prompt flow when the user wants to enable it. Lives
+/// here (Settings) rather than onboarding so we don't pile up permission
+/// prompts on first install.
+class _BackgroundLocationTile extends ConsumerStatefulWidget {
+  const _BackgroundLocationTile();
+
+  @override
+  ConsumerState<_BackgroundLocationTile> createState() =>
+      _BackgroundLocationTileState();
+}
+
+class _BackgroundLocationTileState
+    extends ConsumerState<_BackgroundLocationTile> {
+  bool? _hasAlways;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final has = await ref
+        .read(locationSharingProvider.notifier)
+        .hasBackgroundPermission();
+    if (mounted) setState(() => _hasAlways = has);
+  }
+
+  Future<void> _enable() async {
+    setState(() => _busy = true);
+    // 1. Prominent disclosure first — Google's requirement before the OS
+    //    prompt. User can dismiss; we honour that without retrying.
+    final accepted = await BackgroundDisclosureScreen.show(context);
+    if (!mounted) return;
+    if (!accepted) {
+      setState(() => _busy = false);
+      return;
+    }
+    // 2. OS prompt. On Android 10+ this surfaces "Allow all the time" /
+    //    "Only this time" / "Don't allow". On iOS this upsells WhenInUse
+    //    → Always one time per install.
+    final upgraded = await ref
+        .read(locationSharingProvider.notifier)
+        .requestBackgroundUpgrade();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _hasAlways = upgraded;
+    });
+    if (!upgraded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              "Didn't grant 'Allow all the time' — open the system settings "
+              'and pick it manually to enable background sharing.'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final has = _hasAlways;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Background sharing', style: t.titleMedium),
+        const SizedBox(height: 4),
+        const Text(
+          'Whether your party can see you with the screen off. Without this, '
+          'your dot freezes on their map the moment your phone sleeps.',
+          style: TextStyle(fontSize: 12, color: Colors.white54),
+        ),
+        const SizedBox(height: 12),
+        if (has == null)
+          const ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: SizedBox(
+              width: 24, height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            title: Text('Checking permission…'),
+          )
+        else if (has)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.check_circle, color: Colors.green),
+            title: const Text('Background sharing is ON'),
+            subtitle: const Text(
+                'Your position keeps flowing to your party while the '
+                'screen is off. Disable via OS settings if you change '
+                'your mind.'),
+          )
+        else
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.location_off_outlined,
+                color: Colors.orange),
+            title: const Text('Background sharing is OFF'),
+            subtitle: const Text(
+                'Your dot freezes for the rest of your party once your '
+                'screen sleeps. Tap Enable to fix.'),
+            trailing: FilledButton(
+              onPressed: _busy ? null : _enable,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.amber,
+                foregroundColor: Colors.black,
+              ),
+              child: _busy
+                  ? const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.black),
+                    )
+                  : const Text('Enable'),
+            ),
+          ),
+      ],
+    );
+  }
 }

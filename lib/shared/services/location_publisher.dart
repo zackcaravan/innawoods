@@ -24,7 +24,13 @@ class LocationPublisher {
   final MeshBridge _bridge;
 
   /// Request location permission + ensure services are on. Returns whether we
-  /// may read location.
+  /// may read location at all (whileInUse or always).
+  ///
+  /// This is the foreground-only ask — sufficient for the screen-on map and
+  /// fixes the publish loop reads. For background updates to keep flowing
+  /// while the user has their phone in a pocket, see [ensureBackground]
+  /// which adds the second-stage Always prompt + the in-app disclosure
+  /// Google requires before that prompt fires.
   Future<bool> ensurePermission() async {
     if (!await Geolocator.isLocationServiceEnabled()) return false;
     var perm = await Geolocator.checkPermission();
@@ -33,6 +39,41 @@ class LocationPublisher {
     }
     return perm == LocationPermission.always ||
         perm == LocationPermission.whileInUse;
+  }
+
+  /// Whether background location is already granted (Always on iOS / "Allow
+  /// all the time" on Android). Reads-only; never prompts.
+  Future<bool> hasBackgroundPermission() async {
+    final perm = await Geolocator.checkPermission();
+    return perm == LocationPermission.always;
+  }
+
+  /// Try to upgrade from whileInUse to always. The OS prompt only succeeds
+  /// after a foreground (whileInUse) grant — so this method ensures that
+  /// first, then asks for the upgrade. Returns true iff we end up with
+  /// LocationPermission.always.
+  ///
+  /// IMPORTANT: callers must show the prominent disclosure screen
+  /// (BackgroundDisclosureScreen) before invoking this. Google rejects
+  /// Play Console submissions that ask for background location without
+  /// an in-app disclosure preceding the OS prompt.
+  Future<bool> requestBackgroundUpgrade() async {
+    if (!await Geolocator.isLocationServiceEnabled()) return false;
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) {
+      perm = await Geolocator.requestPermission();
+    }
+    if (perm != LocationPermission.whileInUse &&
+        perm != LocationPermission.always) {
+      return false; // foreground itself was denied — nothing more to do
+    }
+    if (perm == LocationPermission.always) return true; // already done
+    // Android 10+ shows a system dialog with three options when we re-ask
+    // after whileInUse: "Allow all the time", "Only this time", "Don't
+    // allow." iOS shows a one-time upsell to upgrade WhenInUse → Always.
+    // Either way, requestPermission again is the trigger.
+    perm = await Geolocator.requestPermission();
+    return perm == LocationPermission.always;
   }
 
   /// A single current fix. The publish loop calls this on its configurable

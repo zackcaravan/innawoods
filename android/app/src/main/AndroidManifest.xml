@@ -4,9 +4,27 @@
     <!-- Foreground location for live party position sharing -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-    <!-- ACCESS_BACKGROUND_LOCATION added in the background-tracking phase -->
+    <!-- Background location so the crew can see each other when the phone is
+         in a pocket. Requires a prominent in-app disclosure before the OS
+         prompt (see lib/features/onboarding/screens/background_disclosure_screen.dart)
+         and a Background Location Use justification on the Play Console
+         submission (see docs/play-background-location-submission.md). -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <!-- Foreground service for background location updates (Android 10+).
+         FOREGROUND_SERVICE_LOCATION is the granular subtype required on
+         Android 14+; geolocator's foregroundNotificationConfig creates the
+         service with this type automatically when configured. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <!-- Wake the device to deliver a fresh fix while the screen is off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- Dead-man's-switch / crew alerts -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Full-screen alert when a party member triggers Man-down. The OS
+         allows the FCM payload's high priority + this permission to wake
+         the screen and present an interstitial; without it Android shows
+         a normal banner that's silent in DND mode. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <!-- Camera for pin photos (image_picker) -->
     <uses-permission android:name="android.permission.CAMERA"/>
 
