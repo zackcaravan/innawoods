@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:permission_handler/permission_handler.dart' as ph;
 
 import '../../../shared/services/coord_format.dart';
 import '../../../shared/services/location_publisher.dart';
@@ -307,7 +308,27 @@ class _BackgroundLocationTileState
       setState(() => _busy = false);
       return;
     }
-    // 2. Attempt the upgrade. On Android 10 and earlier this can show a
+    // 2. POST_NOTIFICATIONS (Android 13+). Without this, the foreground
+    //    service's persistent notification is silently dropped, leaving
+    //    the user with no signal that we're actually sharing — defeating
+    //    the disclosure promise. Ask before the location dance so the OS
+    //    prompt doesn't sandwich them. No-op on iOS / Android < 13 where
+    //    the package returns granted without showing anything.
+    final notifStatus = await ph.Permission.notification.request();
+    if (!mounted) return;
+    if (!notifStatus.isGranted) {
+      // Don't block on this — background sharing technically works
+      // without notifications visible, it's just that the user won't
+      // know it's running. Surface a snackbar and continue.
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              "Notifications blocked. You won't see the persistent "
+              'banner that tells you sharing is active.'),
+        ),
+      );
+    }
+    // 3. Attempt the upgrade. On Android 10 and earlier this can show a
     //    runtime dialog with "Allow all the time"; on Android 11+ Google
     //    removed that dialog and we need to deep-link to app settings.
     //    The publisher returns an enum that tells us which case we're in.
