@@ -35,15 +35,15 @@
         if (insertAt < 0) insertAt = layers.length;
         layers.splice(insertAt, 0, {
           id: 'hillshade', type: 'hillshade', source: 'dem',
+          // OFF BY DEFAULT — user feedback: "trip mode (which disables
+          // hillshade) looks great; default mode is broken". Tried lowering
+          // exaggeration from 1.0 → 0.5 in commit b9c3463; still felt
+          // visually overwhelming over the vector basemap. The honest fix
+          // is to ship the cleaner topo look as the default. Users who
+          // want relief shading can re-enable via the layers sheet toggle.
+          layout: { visibility: 'none' },
           paint: {
-            // Default exaggeration was 1.0 (the MAX MapLibre allows) which
-            // visually overwhelmed the vector basemap in mountainous terrain
-            // — the user reported "the map is underneath the mountains".
-            // 0.5 is a neutral default that still gives clear shading
-            // without drowning out roads, parks, water, and landcover.
-            // setOffRoadStyle still boosts to 0.8 when the user wants
-            // dramatic relief.
-            'hillshade-exaggeration': 0.5,
+            'hillshade-exaggeration': 0.6,
             'hillshade-shadow-color': '#2e2618',
             'hillshade-highlight-color': '#fbf7ec'
           }
@@ -941,12 +941,15 @@
           // now a noop — see comment near its addLayer. The off-road style
           // doesn't need to do anything for trails; the colored split
           // layers already provide the visual distinction the user wants.)
-          // Boost hillshade for stronger relief. Off-road on = 0.8 (strong
-          // but not overwhelming); off-road off = 0.5 (matches the default
-          // initial paint value above). MapLibre clamps this to [0, 1].
+          // Off-road style ENABLES hillshade (default is off now). Off-road
+          // users typically want dramatic relief shading; the rest get the
+          // cleaner topo look. Trip mode still forces hillshade off via
+          // setHillshade(false) regardless of this.
           if (map.getLayer('hillshade')) {
+            map.setLayoutProperty('hillshade', 'visibility',
+                on ? 'visible' : 'none');
             map.setPaintProperty('hillshade', 'hillshade-exaggeration',
-                on ? 0.8 : 0.5);
+                on ? 0.8 : 0.6);
           }
         };
         // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.
