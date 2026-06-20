@@ -1,0 +1,155 @@
+{
+  "_comment": "Source of truth for region bboxes. Must stay in sync with lib/shared/services/region_catalog.dart. Bbox format: [minLng, minLat, maxLng, maxLat]. maxZoom of null means use the planet pmtiles' native max (14); explicit values cap the extract to keep filesize under GitHub's 2 GB per-asset limit.",
+  "regions": [
+    {
+      "id": "us-wa",
+      "name": "Washington",
+      "filename": "wa.pmtiles",
+      "bbox": [-124.85, 45.55, -116.92, 49.00],
+      "maxZoom": null,
+      "built": true
+    },
+    {
+      "id": "us-or",
+      "name": "Oregon",
+      "filename": "or.pmtiles",
+      "bbox": [-124.57, 41.99, -116.46, 46.30],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-id",
+      "name": "Idaho",
+      "filename": "id.pmtiles",
+      "bbox": [-117.24, 41.99, -111.04, 49.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-mt",
+      "name": "Montana",
+      "filename": "mt.pmtiles",
+      "bbox": [-116.05, 44.36, -104.04, 49.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-wy",
+      "name": "Wyoming",
+      "filename": "wy.pmtiles",
+      "bbox": [-111.06, 40.99, -104.05, 45.01],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-co",
+      "name": "Colorado",
+      "filename": "co.pmtiles",
+      "bbox": [-109.06, 36.99, -102.04, 41.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-ut",
+      "name": "Utah",
+      "filename": "ut.pmtiles",
+      "bbox": [-114.05, 36.99, -109.04, 42.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-nv",
+      "name": "Nevada",
+      "filename": "nv.pmtiles",
+      "bbox": [-120.01, 35.00, -114.04, 42.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-ca",
+      "name": "California",
+      "filename": "ca.pmtiles",
+      "bbox": [-124.49, 32.53, -114.13, 42.01],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-az-nm",
+      "name": "Arizona + New Mexico",
+      "filename": "az-nm.pmtiles",
+      "bbox": [-114.82, 31.33, -103.00, 37.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-ak",
+      "name": "Alaska",
+      "filename": "ak.pmtiles",
+      "bbox": [-180.00, 51.21, -129.97, 71.50],
+      "maxZoom": 12,
+      "built": false,
+      "_note": "maxZoom capped at 12 because zoom 14 would push AK over GitHub's 2 GB per-asset limit. Zoom 12 still resolves individual trails for backcountry use."
+    },
+    {
+      "id": "us-ne-north",
+      "name": "Northern New England",
+      "filename": "ne-north.pmtiles",
+      "bbox": [-73.43, 42.70, -66.95, 47.46],
+      "maxZoom": null,
+      "built": false,
+      "_note": "ME + NH + VT — single users routinely cross these state lines"
+    },
+    {
+      "id": "us-ny-pa",
+      "name": "New York + Pennsylvania",
+      "filename": "ny-pa.pmtiles",
+      "bbox": [-80.52, 39.72, -71.86, 45.02],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-appalachia-s",
+      "name": "Southern Appalachia",
+      "filename": "appalachia-s.pmtiles",
+      "bbox": [-90.31, 33.84, -75.24, 40.64],
+      "maxZoom": null,
+      "built": false,
+      "_note": "VA + WV + NC + TN + KY"
+    },
+    {
+      "id": "us-midwest-upper",
+      "name": "Upper Midwest",
+      "filename": "midwest-upper.pmtiles",
+      "bbox": [-97.24, 41.70, -82.42, 49.38],
+      "maxZoom": null,
+      "built": false,
+      "_note": "MI + WI + MN — North woods country"
+    },
+    {
+      "id": "us-plains",
+      "name": "Plains",
+      "filename": "plains.pmtiles",
+      "bbox": [-104.06, 35.99, -89.10, 49.00],
+      "maxZoom": null,
+      "built": false,
+      "_note": "ND + SD + NE + KS + IA + MO"
+    },
+    {
+      "id": "us-tx-ok-ar",
+      "name": "Texas + Oklahoma + Arkansas",
+      "filename": "tx-ok-ar.pmtiles",
+      "bbox": [-106.65, 25.83, -89.64, 37.00],
+      "maxZoom": null,
+      "built": false
+    },
+    {
+      "id": "us-southeast",
+      "name": "Southeast",
+      "filename": "southeast.pmtiles",
+      "bbox": [-94.04, 24.40, -78.54, 35.22],
+      "maxZoom": null,
+      "built": false,
+      "_note": "GA + SC + FL + AL + MS + LA"
+    }
+  ]
+}

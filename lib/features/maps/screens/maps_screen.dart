@@ -36,36 +36,104 @@ class MapsScreen extends ConsumerWidget {
             width: double.infinity,
             color: Colors.amber.withValues(alpha: 0.12),
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-            child: const Text(
-              'Washington is built — other regions ship as we add them to the '
-              'GitHub releases.',
-              style: TextStyle(fontSize: 12, color: Colors.white70),
+            child: Text(
+              '${catalog.available.length} of ${catalog.all.length} regions '
+              'available · the rest land as we build their PMTiles.',
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
             ),
           ),
           Expanded(
-            child: ListView.separated(
+            child: ListView(
               padding: const EdgeInsets.all(12),
-              itemCount: catalog.all.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final r = catalog.all[i];
-                return _RegionTile(
-                  region: r,
-                  isDownloaded: downloaded.contains(r.id),
-                  isActive: active == r.id,
-                  progress: inFlight[r.id],
-                  demProgress: demInFlight[r.id],
-                  demError: ref
-                      .read(demPrefetchControllerProvider.notifier)
-                      .errorFor(r.id),
-                  error: ref
-                      .read(regionDownloadControllerProvider.notifier)
-                      .errorFor(r.id),
-                );
-              },
+              children: [
+                if (catalog.available.isNotEmpty) ...[
+                  const _SectionHeader('Available now'),
+                  for (final r in catalog.available) ...[
+                    _RegionTile(
+                      region: r,
+                      isDownloaded: downloaded.contains(r.id),
+                      isActive: active == r.id,
+                      progress: inFlight[r.id],
+                      demProgress: demInFlight[r.id],
+                      demError: ref
+                          .read(demPrefetchControllerProvider.notifier)
+                          .errorFor(r.id),
+                      error: ref
+                          .read(regionDownloadControllerProvider.notifier)
+                          .errorFor(r.id),
+                    ),
+                    const Divider(height: 1),
+                  ],
+                ],
+                if (catalog.comingSoon.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const _SectionHeader('Coming soon'),
+                  for (final r in catalog.comingSoon) ...[
+                    _ComingSoonTile(region: r),
+                    const Divider(height: 1),
+                  ],
+                ],
+              ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader(this.label);
+  final String label;
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+      child: Text(
+        label.toUpperCase(),
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.5,
+          color: Colors.white54,
+        ),
+      ),
+    );
+  }
+}
+
+/// Grey-treated placeholder row for catalog entries whose PMTiles file
+/// hasn't been built yet. Non-interactive — taps don't trigger download.
+class _ComingSoonTile extends StatelessWidget {
+  const _ComingSoonTile({required this.region});
+  final MapRegion region;
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: 0.55,
+      child: ListTile(
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+        leading: const Icon(Icons.cloud_off_outlined),
+        title: Text(region.name),
+        subtitle: Text('${region.sizeLabel} · coming soon'),
+        trailing: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Text(
+            'SOON',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+              color: Colors.white60,
+            ),
+          ),
+        ),
       ),
     );
   }

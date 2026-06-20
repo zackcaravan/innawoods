@@ -19,6 +19,12 @@ class MapRegion {
     this.minLat,
     this.maxLng,
     this.maxLat,
+    // Whether the .pmtiles asset for this region has actually been built
+    // and uploaded to the release. False = catalog placeholder; the maps
+    // screen shows it greyed out with a "Coming soon" badge instead of
+    // letting the user tap into a 404. Lets us ship the full state list
+    // ahead of the extracts so users see the roadmap.
+    this.built = true,
   });
 
   /// Short stable id used as the on-disk filename (`<id>.pmtiles`).
@@ -47,6 +53,12 @@ class MapRegion {
   final double? minLat;
   final double? maxLng;
   final double? maxLat;
+
+  /// Whether the asset at [pmtilesUrl] actually exists yet. New regions land
+  /// in the catalog with `built: false` so the UI lists them as "coming
+  /// soon"; the extract pipeline flips this to true once the file is
+  /// uploaded to the release. See `tools/build-regions/` for the workflow.
+  final bool built;
 
   /// Resolved [minLng, minLat, maxLng, maxLat] — uses provided fields when set,
   /// otherwise a 4°×3° box centered on [centerLng]/[centerLat].
