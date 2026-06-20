@@ -36,7 +36,14 @@
         layers.splice(insertAt, 0, {
           id: 'hillshade', type: 'hillshade', source: 'dem',
           paint: {
-            'hillshade-exaggeration': 1.0,
+            // Default exaggeration was 1.0 (the MAX MapLibre allows) which
+            // visually overwhelmed the vector basemap in mountainous terrain
+            // — the user reported "the map is underneath the mountains".
+            // 0.5 is a neutral default that still gives clear shading
+            // without drowning out roads, parks, water, and landcover.
+            // setOffRoadStyle still boosts to 0.8 when the user wants
+            // dramatic relief.
+            'hillshade-exaggeration': 0.5,
             'hillshade-shadow-color': '#2e2618',
             'hillshade-highlight-color': '#fbf7ec'
           }
@@ -934,11 +941,12 @@
           // now a noop — see comment near its addLayer. The off-road style
           // doesn't need to do anything for trails; the colored split
           // layers already provide the visual distinction the user wants.)
-          // Boost hillshade for stronger relief. MapLibre clamps this to
-          // [0, 1], so we max it out when the off-road style is on.
+          // Boost hillshade for stronger relief. Off-road on = 0.8 (strong
+          // but not overwhelming); off-road off = 0.5 (matches the default
+          // initial paint value above). MapLibre clamps this to [0, 1].
           if (map.getLayer('hillshade')) {
             map.setPaintProperty('hillshade', 'hillshade-exaggeration',
-                on ? 1.0 : 0.7);
+                on ? 0.8 : 0.5);
           }
         };
         // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.
@@ -1440,23 +1448,10 @@
             paint: { 'line-color': '#ff3d00', 'line-width': 2 } });
           // 'overlay-trails' used to live here as a separate orange highlight
           // layer over kind ∈ [path, other]. Its role is now played by the
-          // split roads_hike + roads_orv layers (defined in wa_layers.json,
-          // hidden by default, made visible together when the user enables
-          // the "Trails & tracks" overlay). See setTrailsOverlay below.
-          // Keeping a noop so the legacy addLayer pattern lines up; the rest
-          // of the chained overlay layer add-statements still apply.
-          map.addLayer({ id: 'overlay-trails-noop', type: 'line',
-            source: 'protomaps', 'source-layer': 'roads',
-            filter: ['==', 'kind', '__never__'],
-            layout: { visibility: 'none' },
-            paint: { 'line-color': '#000000',
-              'line-width': ['interpolate', ['linear'], ['zoom'],
-                10, 1.2,
-                14, 2.5,
-                17, 4],
-              'line-dasharray': [3, 2],
-              'line-opacity': 0.9,
-            } });
+          // split roads_hike + roads_orv layers (in wa_layers.json, hidden
+          // by default, made visible together via setTrailsOverlay). Old
+          // placeholder noop layer removed — it was dead code with a
+          // never-matching filter and added nothing.
 
           // Party overlays (drawn above terrain/labels).
           // Live recording breadcrumb — red dashed line so it reads distinct
