@@ -941,16 +941,11 @@
           // now a noop — see comment near its addLayer. The off-road style
           // doesn't need to do anything for trails; the colored split
           // layers already provide the visual distinction the user wants.)
-          // Off-road style ENABLES hillshade (default is off now). Off-road
-          // users typically want dramatic relief shading; the rest get the
-          // cleaner topo look. Trip mode still forces hillshade off via
-          // setHillshade(false) regardless of this.
-          if (map.getLayer('hillshade')) {
-            map.setLayoutProperty('hillshade', 'visibility',
-                on ? 'visible' : 'none');
-            map.setPaintProperty('hillshade', 'hillshade-exaggeration',
-                on ? 0.8 : 0.6);
-          }
+          // (Off-road style USED to toggle hillshade visibility — that was
+          // bundling two unrelated concerns. The user found that off-road
+          // for the highway dimming brought back the unwanted hillshade.
+          // Hillshade is now strictly user-controlled via setHillshade —
+          // off-road only does its road dimming + trail boldening job.)
         };
         // Terrain height multiplier. 1.0 ≈ true-to-life; higher = more dramatic.
         let demExag = 1.2;
