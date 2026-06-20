@@ -50,31 +50,54 @@ class LocationPublisher {
 
   /// Try to upgrade from whileInUse to always. The OS prompt only succeeds
   /// after a foreground (whileInUse) grant — so this method ensures that
-  /// first, then asks for the upgrade. Returns true iff we end up with
-  /// LocationPermission.always.
+  /// first, then asks for the upgrade.
+  ///
+  /// Returns:
+  ///   - [BackgroundUpgradeResult.granted]   — perm is now Always; done
+  ///   - [BackgroundUpgradeResult.needsSettings] — Android 11+ no longer
+  ///     shows a runtime dialog for ACCESS_BACKGROUND_LOCATION; the user
+  ///     has to grant it manually in app settings. Caller should call
+  ///     [openAppSettings] next and listen for app resume to re-check.
+  ///   - [BackgroundUpgradeResult.foregroundDenied] — even whileInUse
+  ///     was refused. There's nothing more this code can do.
   ///
   /// IMPORTANT: callers must show the prominent disclosure screen
   /// (BackgroundDisclosureScreen) before invoking this. Google rejects
   /// Play Console submissions that ask for background location without
   /// an in-app disclosure preceding the OS prompt.
-  Future<bool> requestBackgroundUpgrade() async {
-    if (!await Geolocator.isLocationServiceEnabled()) return false;
+  Future<BackgroundUpgradeResult> requestBackgroundUpgrade() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      return BackgroundUpgradeResult.foregroundDenied;
+    }
     var perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
     }
     if (perm != LocationPermission.whileInUse &&
         perm != LocationPermission.always) {
-      return false; // foreground itself was denied — nothing more to do
+      return BackgroundUpgradeResult.foregroundDenied;
     }
-    if (perm == LocationPermission.always) return true; // already done
-    // Android 10+ shows a system dialog with three options when we re-ask
-    // after whileInUse: "Allow all the time", "Only this time", "Don't
-    // allow." iOS shows a one-time upsell to upgrade WhenInUse → Always.
-    // Either way, requestPermission again is the trigger.
+    if (perm == LocationPermission.always) {
+      return BackgroundUpgradeResult.granted;
+    }
+    // Try the runtime prompt. On Android 10 and earlier this can show a
+    // 3-option dialog that includes "Allow all the time." On Android 11+
+    // it's been deliberately neutered by Google: no in-app way to grant
+    // background location — only system settings.
     perm = await Geolocator.requestPermission();
-    return perm == LocationPermission.always;
+    if (perm == LocationPermission.always) {
+      return BackgroundUpgradeResult.granted;
+    }
+    return BackgroundUpgradeResult.needsSettings;
   }
+
+  /// Open the app's system settings page so the user can manually grant
+  /// "Allow all the time" for location. Required on Android 11+ where
+  /// the runtime dialog for background location was removed.
+  ///
+  /// Returns true if settings opened. The caller can't await the user's
+  /// action there — listen for app resume and re-check permission state.
+  Future<bool> openAppSettings() => Geolocator.openAppSettings();
 
   /// A single current fix. The publish loop calls this on its configurable
   /// interval (battery-friendlier than a continuous stream).
@@ -143,4 +166,18 @@ class LocationPublisher {
     }();
     await Future.wait([supabaseFuture, meshFuture]);
   }
+}
+
+/// Outcome of [LocationPublisher.requestBackgroundUpgrade]. Drives the UI's
+/// decision on whether to open settings, show a snackbar, or do nothing.
+enum BackgroundUpgradeResult {
+  /// Background permission is now granted. UI flips to "ON".
+  granted,
+
+  /// Foreground (whileInUse) is granted, but the OS won't let us prompt
+  /// for Always inline. Caller should open app settings.
+  needsSettings,
+
+  /// Even the foreground grant was refused. Nothing more to try.
+  foregroundDenied,
 }

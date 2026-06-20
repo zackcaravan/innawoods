@@ -294,7 +294,13 @@ class LocationSharing extends _$LocationSharing {
   /// flowing while the phone is in their pocket. MUST be called only after
   /// the prominent disclosure screen has been shown and accepted (Google
   /// requires it before the OS prompt). Returns the resulting state so the
-  /// caller can update UI / show a toast.
-  Future<bool> requestBackgroundUpgrade() =>
+  /// caller can update UI / show a toast / deep-link to settings.
+  Future<BackgroundUpgradeResult> requestBackgroundUpgrade() =>
       ref.read(locationPublisherProvider).requestBackgroundUpgrade();
+
+  /// Opens the OS's app-settings page so the user can manually flip the
+  /// background-location permission to "Allow all the time." Needed on
+  /// Android 11+ since Google removed the runtime dialog for it.
+  Future<bool> openAppSettings() =>
+      ref.read(locationPublisherProvider).openAppSettings();
 }

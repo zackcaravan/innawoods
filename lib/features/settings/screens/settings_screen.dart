@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../shared/services/coord_format.dart';
+import '../../../shared/services/location_publisher.dart';
 import '../../../shared/services/settings_store.dart';
 import '../providers/settings_provider.dart';
 import '../../../core/errors/user_error.dart';
@@ -254,14 +255,38 @@ class _BackgroundLocationTile extends ConsumerStatefulWidget {
 }
 
 class _BackgroundLocationTileState
-    extends ConsumerState<_BackgroundLocationTile> {
+    extends ConsumerState<_BackgroundLocationTile>
+    with WidgetsBindingObserver {
   bool? _hasAlways;
   bool _busy = false;
+
+  /// True while we're waiting for the user to come back from the system
+  /// settings page. Drives the "Waiting for you to grant…" banner and
+  /// the lifecycle re-check on resume.
+  bool _awaitingSettingsReturn = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When the user comes back from system settings (or any other app),
+    // re-check the permission state. If they granted Always in settings,
+    // the tile flips to "ON" without them having to tap Enable again.
+    if (state == AppLifecycleState.resumed && _awaitingSettingsReturn) {
+      _awaitingSettingsReturn = false;
+      _refresh();
+    }
   }
 
   Future<void> _refresh() async {
@@ -273,33 +298,67 @@ class _BackgroundLocationTileState
 
   Future<void> _enable() async {
     setState(() => _busy = true);
-    // 1. Prominent disclosure first — Google's requirement before the OS
-    //    prompt. User can dismiss; we honour that without retrying.
+    // 1. Prominent disclosure first — Google's requirement before any OS
+    //    prompt / settings deep-link. User can dismiss; we honour that
+    //    without retrying.
     final accepted = await BackgroundDisclosureScreen.show(context);
     if (!mounted) return;
     if (!accepted) {
       setState(() => _busy = false);
       return;
     }
-    // 2. OS prompt. On Android 10+ this surfaces "Allow all the time" /
-    //    "Only this time" / "Don't allow". On iOS this upsells WhenInUse
-    //    → Always one time per install.
-    final upgraded = await ref
+    // 2. Attempt the upgrade. On Android 10 and earlier this can show a
+    //    runtime dialog with "Allow all the time"; on Android 11+ Google
+    //    removed that dialog and we need to deep-link to app settings.
+    //    The publisher returns an enum that tells us which case we're in.
+    final result = await ref
         .read(locationSharingProvider.notifier)
         .requestBackgroundUpgrade();
     if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _hasAlways = upgraded;
-    });
-    if (!upgraded) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              "Didn't grant 'Allow all the time' — open the system settings "
-              'and pick it manually to enable background sharing.'),
-        ),
-      );
+    switch (result) {
+      case BackgroundUpgradeResult.granted:
+        setState(() {
+          _busy = false;
+          _hasAlways = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Color(0xFF2e7d32),
+            content: Text('Background sharing is ON.'),
+          ),
+        );
+        return;
+      case BackgroundUpgradeResult.foregroundDenied:
+        setState(() => _busy = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Location permission denied. Innawoods needs at least '
+                "'While using app' to function — tap Enable again to retry."),
+          ),
+        );
+        return;
+      case BackgroundUpgradeResult.needsSettings:
+        // Android 11+: open the app's system settings so the user can
+        // pick "Allow all the time" themselves. Set _awaitingSettingsReturn
+        // so the lifecycle observer above re-checks on resume.
+        setState(() {
+          _busy = false;
+          _awaitingSettingsReturn = true;
+        });
+        await ref
+            .read(locationSharingProvider.notifier)
+            .openAppSettings();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 8),
+            content: Text(
+                "Opened system settings. Tap 'Permissions' → 'Location' "
+                "→ 'Allow all the time', then come back."),
+          ),
+        );
+        return;
     }
   }
 
