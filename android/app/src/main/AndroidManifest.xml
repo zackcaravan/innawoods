@@ -20,11 +20,14 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- Dead-man's-switch / crew alerts -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <!-- Full-screen alert when a party member triggers Man-down. The OS
-         allows the FCM payload's high priority + this permission to wake
-         the screen and present an interstitial; without it Android shows
-         a normal banner that's silent in DND mode. -->
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+    <!-- USE_FULL_SCREEN_INTENT was declared here for a future FCM-driven
+         full-screen Man-down alert that wakes the receiver's phone from
+         a locked state. That FCM side was deliberately scoped out (the
+         user wanted "no emergency things"), and the current Man-down
+         receive flow uses a regular in-app modal — no notification
+         channel, no full-screen flag. Declaring an unused permission
+         triggers Google's Full-Screen Intent declaration form on
+         submission; we keep it out until we actually wire FCM. -->
     <!-- Camera for pin photos (image_picker) -->
     <uses-permission android:name="android.permission.CAMERA"/>
 
