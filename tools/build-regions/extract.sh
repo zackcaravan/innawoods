@@ -8,12 +8,16 @@
 #
 # Requires:
 #   - `pmtiles` CLI from go-pmtiles (https://github.com/protomaps/go-pmtiles)
-#     Install: `go install github.com/protomaps/go-pmtiles/v2@latest`
+#     Install: `go install github.com/protomaps/go-pmtiles@latest`
+#     Binary lands as `go-pmtiles`; symlink it to `pmtiles` for the
+#     script to find it: `ln -sf ~/go/bin/go-pmtiles ~/go/bin/pmtiles`
 #   - `jq` for JSON parsing
-#   - `PLANET_PMTILES` env var pointing at the Protomaps daily build.
-#     Get the latest at https://maps.protomaps.com/builds (~120 GB
-#     compressed). Set PLANET_PMTILES=/path/to/planet.pmtiles before
-#     running, or symlink the planet to tools/build-regions/planet.pmtiles.
+#   - PLANET_PMTILES env var pointing at the source archive. Two modes:
+#       LOCAL: /path/to/planet.pmtiles (faster, but ~120 GB on disk)
+#       REMOTE: https://build.protomaps.com/<YYYYMMDD>.pmtiles
+#               (no download required — pmtiles streams only the bytes
+#                needed via HTTP range requests). DEFAULT if unset:
+#                today's build URL.
 #
 # Output: tools/build-regions/out/<filename>.pmtiles
 # The upload step is separate — see upload.sh.
@@ -25,17 +29,32 @@ MANIFEST="$HERE/regions.json"
 OUT_DIR="$HERE/out"
 mkdir -p "$OUT_DIR"
 
-PLANET="${PLANET_PMTILES:-$HERE/planet.pmtiles}"
-if [[ ! -f "$PLANET" ]]; then
+# Source: local file path OR remote URL. Default = today's build.
+PLANET="${PLANET_PMTILES:-https://build.protomaps.com/$(date -u +%Y%m%d).pmtiles}"
+if [[ "$PLANET" =~ ^https?:// ]]; then
+  echo "Source: remote ($PLANET)"
+  echo "  Streaming via HTTP range requests; no local download required."
+  # Verify it's reachable before kicking off long-running extracts.
+  status="$(curl -I -s -o /dev/null -w '%{http_code}' "$PLANET")"
+  if [[ "$status" != "200" ]]; then
+    echo "ERROR: planet URL returned HTTP $status" >&2
+    echo "Pick a recent date from https://build.protomaps.com/ and set" >&2
+    echo "  export PLANET_PMTILES=https://build.protomaps.com/<YYYYMMDD>.pmtiles" >&2
+    exit 1
+  fi
+elif [[ ! -f "$PLANET" ]]; then
   echo "ERROR: planet PMTiles not found at $PLANET" >&2
-  echo "Download from https://maps.protomaps.com/builds and set" >&2
-  echo "  export PLANET_PMTILES=/path/to/planet.pmtiles" >&2
+  echo "Either: download it locally, or use the default remote URL by" >&2
+  echo "unsetting PLANET_PMTILES." >&2
   exit 1
+else
+  echo "Source: local ($PLANET, $(du -h "$PLANET" | cut -f1))"
 fi
 
 if ! command -v pmtiles >/dev/null; then
   echo "ERROR: 'pmtiles' CLI not in PATH" >&2
-  echo "Install: go install github.com/protomaps/go-pmtiles/v2@latest" >&2
+  echo "Install: go install github.com/protomaps/go-pmtiles@latest" >&2
+  echo "Then: ln -sf ~/go/bin/go-pmtiles ~/go/bin/pmtiles" >&2
   exit 1
 fi
 if ! command -v jq >/dev/null; then
@@ -60,7 +79,6 @@ if [[ ${#TARGET_IDS[@]} -eq 0 ]]; then
   exit 0
 fi
 
-echo "Planet: $PLANET ($(du -h "$PLANET" | cut -f1))"
 echo "Output: $OUT_DIR"
 echo "Regions: ${TARGET_IDS[*]}"
 echo
