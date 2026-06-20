@@ -47,15 +47,22 @@ class _Body extends ConsumerWidget {
         Text('Location update interval: ${_label(settings.locationIntervalSeconds)}'),
         Slider(
           value: settings.locationIntervalSeconds.toDouble(),
-          min: 30,
+          min: 0,
           max: 300,
-          divisions: 9, // 30s steps
+          // 11 notches: 0 (Continuous) + 30s, 60s, … 300s. Leftmost
+          // position turns OFF interval batching and lets the GPS chip
+          // run continuously; everything to the right uses Android's
+          // FusedLocationProvider intervalDuration so the chip can power
+          // down between fixes (the actual battery saver).
+          divisions: 10,
           label: _label(settings.locationIntervalSeconds),
           onChanged: (v) => controller
               .save(settings.copyWith(locationIntervalSeconds: v.round())),
         ),
         const Text(
-          'Less frequent = longer battery life. Takes effect next time you open a party map.',
+          'Continuous = smoothest dot, most battery. Intervals let the GPS '
+          'chip sleep between fixes — biggest battery savings on long trips. '
+          'Takes effect next time you open a party map.',
           style: TextStyle(fontSize: 12, color: Colors.white54),
         ),
         const Divider(height: 32),
@@ -239,8 +246,11 @@ class _Body extends ConsumerWidget {
     return 'Dramatic (${e.toStringAsFixed(1)}×)';
   }
 
-  String _label(int seconds) =>
-      seconds < 60 ? '${seconds}s' : '${(seconds / 60).toStringAsFixed(seconds % 60 == 0 ? 0 : 1)} min';
+  String _label(int seconds) {
+    if (seconds == 0) return 'Continuous';
+    if (seconds < 60) return '${seconds}s';
+    return '${(seconds / 60).toStringAsFixed(seconds % 60 == 0 ? 0 : 1)} min';
+  }
 }
 
 /// Tile that exposes the "Share with screen off" state and triggers the

@@ -172,6 +172,12 @@ Stream<Position> selfPosition(Ref ref) async* {
   final accuracy = settings.tripMode
       ? LocationAccuracy.medium
       : LocationAccuracy.high;
+  // intervalSeconds == 0 → "Continuous" — let the GPS chip stay warm and
+  // deliver fixes whenever distance filter is met. Anything > 0 uses
+  // Android FusedLocationProvider's intervalDuration so the chip can
+  // power down between polls (the actual battery saver).
+  final intervalSeconds = settings.effectiveLocationIntervalSeconds;
+  final continuous = intervalSeconds == 0;
   final filterM = settings.tripMode ? 20 : 5;
 
   // On Android, AndroidSettings.foregroundNotificationConfig spawns a
@@ -185,6 +191,12 @@ Stream<Position> selfPosition(Ref ref) async* {
     locSettings = AndroidSettings(
       accuracy: accuracy,
       distanceFilter: filterM,
+      // The actual battery knob: when set, the OS only wakes the GPS chip
+      // every `intervalDuration`. Continuous mode (null) keeps the chip
+      // warm for the smoothest local-dot rendering.
+      intervalDuration: continuous
+          ? null
+          : Duration(seconds: intervalSeconds),
       // Use the foreground service so background fixes keep flowing
       // regardless of Doze / battery optimisations. The persistent
       // notification is the contract Android requires for that privilege.
@@ -213,7 +225,11 @@ Stream<Position> selfPosition(Ref ref) async* {
       // at the top of the screen — honest signal to the user that we're
       // actively reading their location while they're in another app.
       showBackgroundLocationIndicator: true,
-      pauseLocationUpdatesAutomatically: false,
+      // pauseLocationUpdatesAutomatically lets iOS decide when to pause;
+      // with continuous mode we want the chip warm, otherwise iOS handles
+      // power management based on distanceFilter alone (no equivalent
+      // intervalDuration on iOS — distanceFilter is the only knob).
+      pauseLocationUpdatesAutomatically: !continuous,
       activityType: ActivityType.fitness,
     );
   } else {
