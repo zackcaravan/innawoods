@@ -24,6 +24,7 @@ import '../../../shared/services/party_secret_store.dart';
 import '../../../shared/services/chat_service.dart';
 import '../../../shared/services/party_service.dart';
 import '../../../shared/services/pin_service.dart';
+import '../../../shared/services/mayday_dismissal_store.dart';
 import '../../../shared/services/photo_store.dart';
 import '../../../shared/services/route_service.dart';
 import '../../../shared/services/route_waypoint_service.dart';
@@ -98,6 +99,13 @@ RoutingService routingService(Ref ref) => RoutingService();
 
 @Riverpod(keepAlive: true)
 PhotoStore photoStore(Ref ref) => PhotoStore();
+
+/// Persists which inbound maydays this device has already alerted on,
+/// keyed by message id. Used to silence repeat pops when the user
+/// navigates away and back.
+@Riverpod(keepAlive: true)
+MaydayDismissalStore maydayDismissalStore(Ref ref) =>
+    MaydayDismissalStore();
 
 @riverpod
 PinService pinService(Ref ref) => PinService(

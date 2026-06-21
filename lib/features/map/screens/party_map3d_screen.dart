@@ -709,6 +709,17 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
   /// surfaced as snackbars rather than silently dropping the alert.
   Future<void> _handleInboundMayday(ChatMessage m) async {
     if (!mounted) return;
+    // Two gates so the alert doesn't re-pop on every screen rebuild:
+    //   1. Already-dismissed: persistent across app restarts.
+    //   2. Auto-expire: maydays older than 2 hours are stale; assume the
+    //      situation is resolved off-app (or the sender pushed an
+    //      "all clear" follow-up).
+    final dismissal = ref.read(maydayDismissalStoreProvider);
+    final show = await dismissal.shouldShow(
+      maydayId: m.id,
+      sentAt: m.sentAt,
+    );
+    if (!show || !mounted) return;
     // Fly the camera to the mayday location so the user can see it BEFORE
     // they decide. fitBounds covers both points if we have our own fix.
     final maydayLoc = m.mayday?.location;
@@ -725,6 +736,10 @@ class _PartyMap3dScreenState extends ConsumerState<PartyMap3dScreen> {
       message: m,
       selfLocation: selfLoc,
     );
+    // Either response counts as "I saw it" — once the dialog has been
+    // closed by the user, we never want to re-pop the same mayday id on
+    // this device again. Persists across map navigations + app restarts.
+    await dismissal.dismiss(m.id);
     if (!mounted) return;
     if (resp != MaydayResponse.navigate) return;
     if (selfLoc == null || maydayLoc == null) {

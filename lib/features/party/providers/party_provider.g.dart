@@ -585,6 +585,28 @@ final photoStoreProvider = Provider<PhotoStore>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef PhotoStoreRef = ProviderRef<PhotoStore>;
+String _$maydayDismissalStoreHash() =>
+    r'ec21bfe6457c7e4a86bf83f0e07ab977bd6a2ce0';
+
+/// Persists which inbound maydays this device has already alerted on,
+/// keyed by message id. Used to silence repeat pops when the user
+/// navigates away and back.
+///
+/// Copied from [maydayDismissalStore].
+@ProviderFor(maydayDismissalStore)
+final maydayDismissalStoreProvider = Provider<MaydayDismissalStore>.internal(
+  maydayDismissalStore,
+  name: r'maydayDismissalStoreProvider',
+  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
+      ? null
+      : _$maydayDismissalStoreHash,
+  dependencies: null,
+  allTransitiveDependencies: null,
+);
+
+@Deprecated('Will be removed in 3.0. Use Ref instead')
+// ignore: unused_element
+typedef MaydayDismissalStoreRef = ProviderRef<MaydayDismissalStore>;
 String _$pinServiceHash() => r'3b3c5ee5abb9b66359ad9b884d594486aa50fdc1';
 
 /// See also [pinService].
@@ -1185,7 +1207,7 @@ class _PartyMessagesProviderElement
   String get partyId => (origin as PartyMessagesProvider).partyId;
 }
 
-String _$selfPositionHash() => r'5f44d56e3d06a3a1e8afc548a553d6205953f107';
+String _$selfPositionHash() => r'7f5c7ad8df53bc0a8720ed4d8c59a5ab5e75903e';
 
 /// Live continuous GPS stream for THIS device. Powers the local UI (camera
 /// follow, heading-up auto-mode, instant self-dot updates) without waiting
@@ -1211,7 +1233,7 @@ final selfPositionProvider = StreamProvider<Position>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef SelfPositionRef = StreamProviderRef<Position>;
-String _$locationSharingHash() => r'3edf5cff3b2fd5736c52f5029166fb53c5f414ca';
+String _$locationSharingHash() => r'f352d7deb4ca11f9710f10f27102154c24f5668d';
 
 /// Controls whether this device is broadcasting its own (encrypted) location
 /// to a party. The map screen turns this on while it's open.
