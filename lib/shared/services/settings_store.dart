@@ -45,6 +45,7 @@ class AppSettings {
     this.autoHeadingUp = true,
     this.searchLimitToRegion = false,
     this.mapActivity = MapActivity.all,
+    this.backgroundSharingEnabled = true,
   });
 
   /// How often to publish your position. 30 s default; up to 5 min to save battery.
@@ -92,6 +93,13 @@ class AppSettings {
   /// Trail-style filter — see [MapActivity]. Default `all` (no filter).
   final MapActivity mapActivity;
 
+  /// In-app on/off for the position broadcast loop. False = paused locally;
+  /// the OS permission stays granted but [selfPositionProvider] yields an
+  /// empty stream, the foreground service ends, GPS chip powers down,
+  /// nothing publishes to Supabase or mesh. Lets the user pause sharing
+  /// without going through OS settings to revoke the permission.
+  final bool backgroundSharingEnabled;
+
   /// Effective location-publish interval (in seconds) accounting for trip mode.
   int get effectiveLocationIntervalSeconds =>
       tripMode ? 90 : locationIntervalSeconds;
@@ -109,6 +117,7 @@ class AppSettings {
     bool? autoHeadingUp,
     bool? searchLimitToRegion,
     MapActivity? mapActivity,
+    bool? backgroundSharingEnabled,
   }) =>
       AppSettings(
         locationIntervalSeconds:
@@ -124,6 +133,8 @@ class AppSettings {
         autoHeadingUp: autoHeadingUp ?? this.autoHeadingUp,
         searchLimitToRegion: searchLimitToRegion ?? this.searchLimitToRegion,
         mapActivity: mapActivity ?? this.mapActivity,
+        backgroundSharingEnabled:
+            backgroundSharingEnabled ?? this.backgroundSharingEnabled,
       );
 }
 
@@ -140,6 +151,7 @@ class SettingsStore {
   static const _kAutoHeadingUp = 'innawoods.settings.autoHeadingUp';
   static const _kSearchLimit = 'innawoods.settings.searchLimitToRegion';
   static const _kMapActivity = 'innawoods.settings.mapActivity';
+  static const _kBgSharing = 'innawoods.settings.backgroundSharingEnabled';
 
   Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -157,6 +169,7 @@ class SettingsStore {
       autoHeadingUp: prefs.getBool(_kAutoHeadingUp) ?? true,
       searchLimitToRegion: prefs.getBool(_kSearchLimit) ?? false,
       mapActivity: MapActivity.fromId(prefs.getString(_kMapActivity)),
+      backgroundSharingEnabled: prefs.getBool(_kBgSharing) ?? true,
     );
   }
 
@@ -174,5 +187,6 @@ class SettingsStore {
     await prefs.setBool(_kAutoHeadingUp, s.autoHeadingUp);
     await prefs.setBool(_kSearchLimit, s.searchLimitToRegion);
     await prefs.setString(_kMapActivity, s.mapActivity.id);
+    await prefs.setBool(_kBgSharing, s.backgroundSharingEnabled);
   }
 }

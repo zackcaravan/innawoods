@@ -397,6 +397,12 @@ class _BackgroundLocationTileState
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
     final has = _hasAlways;
+    // The in-app pause flag, watched live. When the user toggles it off,
+    // selfPositionProvider sees the change and tears down the GPS stream;
+    // the foreground notification disappears within a couple of seconds.
+    final settingsAsync = ref.watch(settingsControllerProvider);
+    final enabled =
+        settingsAsync.valueOrNull?.backgroundSharingEnabled ?? true;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -418,14 +424,46 @@ class _BackgroundLocationTileState
             title: Text('Checking permission…'),
           )
         else if (has)
-          ListTile(
+          // Permission granted — show the in-app pause/resume switch.
+          // OS permission stays granted regardless; this only flips the
+          // selfPositionProvider gate, which controls whether the GPS
+          // stream is active.
+          SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.check_circle, color: Colors.green),
-            title: const Text('Background sharing is ON'),
-            subtitle: const Text(
-                'Your position keeps flowing to your party while the '
-                'screen is off. Disable via OS settings if you change '
-                'your mind.'),
+            value: enabled,
+            onChanged: (v) async {
+              final s = settingsAsync.valueOrNull;
+              if (s == null) return;
+              await ref
+                  .read(settingsControllerProvider.notifier)
+                  .save(s.copyWith(backgroundSharingEnabled: v));
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  duration: const Duration(seconds: 2),
+                  backgroundColor:
+                      v ? const Color(0xFF2e7d32) : const Color(0xFF6e5b00),
+                  content: Text(v
+                      ? 'Background sharing is ON.'
+                      : 'Background sharing PAUSED — GPS stops, '
+                          'foreground notification clears, battery saved. '
+                          'Toggle back on to resume.'),
+                ),
+              );
+            },
+            secondary: Icon(
+              enabled ? Icons.check_circle : Icons.pause_circle_outline,
+              color: enabled ? Colors.green : Colors.orange,
+            ),
+            title: Text(enabled
+                ? 'Background sharing is ON'
+                : 'Background sharing is PAUSED'),
+            subtitle: Text(enabled
+                ? 'Your position keeps flowing to your party while the '
+                    'screen is off.'
+                : 'GPS is off, foreground notification cleared, no '
+                    'publishing. Toggle on to resume — no OS prompt '
+                    'needed.'),
           )
         else
           ListTile(

@@ -158,6 +158,15 @@ Stream<List<ChatMessage>> partyMessages(Ref ref, String partyId) =>
 /// 4 mph ≈ a fresh fix every 2.8 s).
 @Riverpod(keepAlive: true)
 Stream<Position> selfPosition(Ref ref) async* {
+  // Watch the in-app pause flag. When the user pauses sharing in Settings,
+  // this returns false → the generator returns immediately → the existing
+  // Geolocator subscription gets cancelled → the foreground service ends →
+  // GPS chip powers down. Real battery savings, no OS-permission dance.
+  // Resume flips this back to true and a new subscription spins up.
+  final enabled = ref.watch(settingsControllerProvider.select(
+      (async) => async.valueOrNull?.backgroundSharingEnabled ?? true));
+  if (!enabled) return;
+
   final publisher = ref.read(locationPublisherProvider);
   if (!await publisher.ensurePermission()) return;
   // Power profile derives from trip mode. Trip mode trades GPS responsiveness
