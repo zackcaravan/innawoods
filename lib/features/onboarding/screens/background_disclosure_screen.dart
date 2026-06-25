@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Caravan Electric, LLC.
 
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
@@ -122,8 +124,16 @@ class BackgroundDisclosureScreen extends StatelessWidget {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              "Next, Android will ask you to choose 'Allow "
-                              "all the time' for this to work.",
+                              // Platform-specific so iOS users don't see
+                              // an Android-only instruction. Apple flagged
+                              // the previous "Next, Android will ask…"
+                              // text under 2.3.10 (third-party-platform
+                              // references in app binary).
+                              Platform.isIOS
+                                  ? "Next, you'll be asked to choose "
+                                      "'Always Allow' for this to work."
+                                  : "Next, you'll be asked to choose "
+                                      "'Allow all the time' for this to work.",
                               style: t.bodySmall
                                   ?.copyWith(color: Colors.white70),
                             ),

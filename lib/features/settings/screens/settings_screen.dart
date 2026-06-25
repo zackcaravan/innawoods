@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Caravan Electric, LLC.
 
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -381,12 +383,17 @@ class _BackgroundLocationTileState
             .read(locationSharingProvider.notifier)
             .openAppSettings();
         if (!mounted) return;
+        // Platform-specific copy so the iOS binary doesn't contain
+        // Android-only label strings (Apple flagged these under 2.3.10).
+        final hint = Platform.isIOS
+            ? "Opened system settings. Tap 'Location' → 'Always', "
+                'then come back.'
+            : "Opened system settings. Tap 'Permissions' → 'Location' "
+                "→ 'Allow all the time', then come back.";
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(seconds: 8),
-            content: Text(
-                "Opened system settings. Tap 'Permissions' → 'Location' "
-                "→ 'Allow all the time', then come back."),
+          SnackBar(
+            duration: const Duration(seconds: 8),
+            content: Text(hint),
           ),
         );
         return;
